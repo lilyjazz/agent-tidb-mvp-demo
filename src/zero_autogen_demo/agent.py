@@ -13,7 +13,6 @@ from urllib.parse import urlparse
 
 import httpx
 from autogen_agentchat.agents import AssistantAgent
-from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 from .config import Settings
 from .db import TiDBSandbox, json_dumps
@@ -301,6 +300,41 @@ def build_task(goal: str, source_url: str) -> str:
     )
 
 
+def create_model_client(settings: Settings) -> Any:
+    provider = settings.model_provider
+    timeout_sec = float(settings.http_timeout_sec)
+
+    if provider in {"openai", "openai_compatible", "gemini"}:
+        from autogen_ext.models.openai import OpenAIChatCompletionClient
+
+        kwargs: dict[str, Any] = {
+            "model": settings.model_name,
+            "api_key": settings.model_api_key,
+            "parallel_tool_calls": False,
+            "timeout": timeout_sec,
+        }
+        if settings.model_base_url:
+            kwargs["base_url"] = settings.model_base_url
+        if settings.model_organization:
+            kwargs["organization"] = settings.model_organization
+        return OpenAIChatCompletionClient(**kwargs)
+
+    if provider == "anthropic":
+        from autogen_ext.models.anthropic import AnthropicChatCompletionClient
+
+        kwargs = {
+            "model": settings.model_name,
+            "api_key": settings.model_api_key,
+            "timeout": timeout_sec,
+            "max_retries": 2,
+        }
+        if settings.model_base_url:
+            kwargs["base_url"] = settings.model_base_url
+        return AnthropicChatCompletionClient(**kwargs)
+
+    raise ValueError(f"Unsupported model provider: {provider}")
+
+
 def make_run_artifacts(root: Path, run_id: str) -> RunArtifacts:
     run_dir = root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -436,14 +470,27 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
     )
     tracker.emit("TIDB_ZERO", f"Credentials saved to {artifacts.instance_path} (permissions 600)")
 
+    tracker.emit(
+        "MODEL",
+        (
+            f"provider={settings.model_provider} model={settings.model_name} "
+            f"base_url={settings.model_base_url or 'default'}"
+        ),
+    )
+
     sandbox = TiDBSandbox(instance=instance, database_name=settings.database_name)
-    model_client: OpenAIChatCompletionClient | None = None
+    model_client: Any | None = None
 
     try:
         sandbox.create_database_if_missing()
         sandbox.connect()
         sandbox.initialize_metadata_tables()
-        sandbox.log_run_start(run_id, goal, source_url, settings.model_name)
+        sandbox.log_run_start(
+            run_id,
+            goal,
+            source_url,
+            f"{settings.model_provider}:{settings.model_name}",
+        )
 
         tool_runtime = ToolRuntime(
             sandbox=sandbox,
@@ -454,11 +501,7 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             http_timeout_sec=settings.http_timeout_sec,
         )
 
-        model_client = OpenAIChatCompletionClient(
-            model=settings.model_name,
-            api_key=settings.openai_api_key,
-            parallel_tool_calls=False,
-        )
+        model_client = create_model_client(settings)
 
         agent = AssistantAgent(
             name="autonomous_data_agent",

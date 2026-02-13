@@ -55,7 +55,22 @@ def run_command(
         "--source-url",
         help="Public data source URL the agent should use. If omitted, CLI will prompt for it.",
     ),
+    provider: str | None = typer.Option(
+        None,
+        "--provider",
+        help="Model provider override: openai, anthropic, gemini, or openai_compatible.",
+    ),
     model: str | None = typer.Option(None, "--model", help="Override model name (default from MODEL_NAME)."),
+    model_base_url: str | None = typer.Option(
+        None,
+        "--model-base-url",
+        help="Override model API base URL (useful for OpenAI-compatible endpoints).",
+    ),
+    model_organization: str | None = typer.Option(
+        None,
+        "--model-organization",
+        help="Optional model organization header (used by some providers).",
+    ),
     tag: str | None = typer.Option(None, "--tag", help="Override TIDB_ZERO_TAG for provisioning traceability."),
     max_tool_iterations: int | None = typer.Option(
         None,
@@ -71,7 +86,10 @@ def run_command(
 
     try:
         settings = Settings.from_env(
+            model_provider=provider,
             model_name=model,
+            model_base_url=model_base_url,
+            model_organization=model_organization,
             tidb_zero_tag=tag,
             max_tool_iterations=max_tool_iterations,
         )

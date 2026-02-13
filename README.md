@@ -31,7 +31,7 @@ No fixed business schema or fixed query templates are hardcoded.
 ## What You Need
 
 - Python 3.10+
-- A cloud model key (`OPENAI_API_KEY`)
+- A model provider key (for OpenAI, Anthropic/Claude, Gemini, or another OpenAI-compatible endpoint)
 - A TiDB Zero invitation code (`TIDB_ZERO_INVITATION_CODE`)
 
 ## Install
@@ -50,14 +50,49 @@ cp .env.example .env
 
 Fill `.env` with at least:
 
-- `OPENAI_API_KEY`
+- `MODEL_PROVIDER`
+- `MODEL_NAME`
+- `MODEL_API_KEY`
 - `TIDB_ZERO_INVITATION_CODE`
 
 Optional overrides:
 
-- `MODEL_NAME` (default: `gpt-4o-mini`)
+- `MODEL_BASE_URL`
+- `MODEL_ORGANIZATION`
 - `TIDB_ZERO_TAG`
 - `MAX_TOOL_ITERATIONS`
+
+Provider quick examples:
+
+```env
+# OpenAI
+MODEL_PROVIDER=openai
+MODEL_NAME=gpt-4o-mini
+MODEL_API_KEY=<openai_key>
+```
+
+```env
+# Claude (Anthropic)
+MODEL_PROVIDER=anthropic
+MODEL_NAME=claude-3-5-sonnet-latest
+MODEL_API_KEY=<anthropic_key>
+```
+
+```env
+# Gemini (Google OpenAI-compatible endpoint)
+MODEL_PROVIDER=gemini
+MODEL_NAME=gemini-2.0-flash
+MODEL_API_KEY=<gemini_key>
+# MODEL_BASE_URL is optional for gemini; default is set automatically
+```
+
+```env
+# Any OpenAI-compatible gateway (for example OpenRouter or internal proxy)
+MODEL_PROVIDER=openai_compatible
+MODEL_NAME=<provider_model_name>
+MODEL_API_KEY=<gateway_key>
+MODEL_BASE_URL=<gateway_base_url>
+```
 
 ## Run Cookbook
 
@@ -75,6 +110,12 @@ You will then be prompted for:
 
 - goal / question
 - source URL
+
+You can also override model settings per run (without editing `.env`):
+
+```bash
+zero-agent-demo run --provider anthropic --model claude-3-5-sonnet-latest
+```
 
 ### 1) Earthquakes (geoscience)
 
