@@ -2,6 +2,8 @@
 
 This repository is a minimal CLI MVP that demonstrates a **general AutoGen agent** running against **TiDB Cloud Zero**.
 
+It is designed for customer-facing demos where you need to show the full chain clearly: from data fetch to schema decisions, SQL execution, and auditable results.
+
 The demo emphasizes three things in the terminal output:
 
 1. **TiDB Zero provisioning** happens at runtime.
@@ -9,6 +11,22 @@ The demo emphasizes three things in the terminal output:
 3. The agent **autonomously writes and executes SQL** to answer a goal.
 
 No fixed business schema or fixed query templates are hardcoded.
+
+## Core Features
+
+- **Per-task isolated TiDB Zero environment**: each `run` provisions a fresh ephemeral TiDB Zero instance.
+- **General-agent behavior**: the agent decides whether to reuse existing tables or create new schema based on current data.
+- **Autonomous SQL execution**: the agent can create tables, ingest data, and query insights directly in the sandbox DB.
+- **Transparent runtime trace**: CLI prints `[TIDB_ZERO]`, `[THINK]`, `[ACTION]`, `[SQL]`, `[OBSERVATION]`, `[FINAL]`.
+- **Strong observability**: `replay` restores the full process, `audit` shows SQL trail, `conn` shows connection details for manual verification.
+
+## Business Value for Customers
+
+- **Fast PoC delivery**: show a complete "agent + data" workflow in minutes with public feeds.
+- **Trust and explainability**: customers see exactly what the agent did, not just a final answer.
+- **Safe experimentation**: isolated disposable TiDB Zero instances reduce blast radius and simplify demos.
+- **Governance readiness**: SQL audit trail and replayable runs support internal review and compliance conversations.
+- **Reusable sales/solution pattern**: one CLI workflow works across domains (finance, weather, media, dev community, and more).
 
 ## What You Need
 
