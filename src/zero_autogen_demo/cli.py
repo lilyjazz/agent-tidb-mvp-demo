@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import typer
 from dotenv import load_dotenv
 
-from .agent import audit_run, replay_run, run_autonomous_demo
+from .agent import audit_run, replay_run, run_autonomous_demo, show_tidb_zero_connection
 from .config import Settings
 
 
@@ -103,6 +103,23 @@ def audit_command(
     try:
         audit_run(resolve_runs_dir(), run_id)
     except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+@app.command("conn")
+def conn_command(
+    run_id: str = typer.Argument(..., help="Run ID from a previous `run` command."),
+    redact_password: bool = typer.Option(
+        False,
+        "--redact-password",
+        help="Hide the password in output.",
+    ),
+) -> None:
+    """Show TiDB Zero connection details for a run (includes DB user/password by default)."""
+    load_dotenv()
+    try:
+        show_tidb_zero_connection(resolve_runs_dir(), run_id, redact_password=redact_password)
+    except (FileNotFoundError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
 
 

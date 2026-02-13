@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from autogen_agentchat.agents import AssistantAgent
@@ -590,3 +591,43 @@ def audit_run(runs_dir: Path, run_id: str) -> None:
         f"sql_count={sql_count} ddl_count={ddl_count} error_count={error_count} "
         f"tables_created={len(created_tables)} {sorted(created_tables)}"
     )
+
+
+def show_tidb_zero_connection(runs_dir: Path, run_id: str, *, redact_password: bool = False) -> None:
+    instance_path = runs_dir / run_id / "tidb_zero_instance.json"
+    if not instance_path.exists():
+        raise FileNotFoundError(f"TiDB Zero instance file not found: {instance_path}")
+
+    raw = safe_json_loads(instance_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid TiDB Zero instance payload in: {instance_path}")
+
+    connection_string = str(raw.get("connectionString", ""))
+    host = str(raw.get("host", ""))
+    port = str(raw.get("port", ""))
+    username = str(raw.get("username", ""))
+    password = str(raw.get("password", ""))
+    expires_at = str(raw.get("expiresAt", ""))
+
+    if not connection_string or not host or not port or not username or not password:
+        raise ValueError(f"Incomplete TiDB Zero connection fields in: {instance_path}")
+
+    shown_password = "***" if redact_password else password
+    shown_connection_string = connection_string
+    if redact_password:
+        parsed = urlparse(connection_string)
+        netloc = parsed.netloc
+        if "@" in netloc:
+            creds, host_part = netloc.split("@", 1)
+            if ":" in creds:
+                user, _ = creds.split(":", 1)
+                netloc = f"{user}:***@{host_part}"
+                shown_connection_string = parsed._replace(netloc=netloc).geturl()
+
+    print(f"[TIDB_ZERO_CONNECTION] run_id={run_id}")
+    print(f"connection_string={shown_connection_string}")
+    print(f"host={host}")
+    print(f"port={port}")
+    print(f"username={username}")
+    print(f"password={shown_password}")
+    print(f"expires_at={expires_at}")

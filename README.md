@@ -1,21 +1,14 @@
 # TiDB Zero + AutoGen General Agent CLI Demo
 
-[![Launch TiDB Cloud Zero](https://img.shields.io/badge/Launch-TiDB%20Cloud%20Zero-00C1DE?style=for-the-badge)](https://zero.tidbcloud.com/)
+This repository is a minimal CLI MVP that demonstrates a **general AutoGen agent** running against **TiDB Cloud Zero**.
 
-> [!IMPORTANT]
-> Start with **TiDB Cloud Zero**: **[https://zero.tidbcloud.com/](https://zero.tidbcloud.com/)**
+The demo emphasizes three things in the terminal output:
 
-**Agent-native data analysis, without prebuilding a schema.**
+1. **TiDB Zero provisioning** happens at runtime.
+2. The agent **handles schema decisions** from public data.
+3. The agent **autonomously writes and executes SQL** to answer a goal.
 
-This repository is a minimal CLI MVP that demonstrates a **general AutoGen agent** running against **TiDB Cloud Zero**. The agent provisions a TiDB Zero instance at runtime, ingests public data, makes schema decisions, and executes SQL to answer your goal.
-
-## Why TiDB Zero stands out in this demo
-
-- **Runtime provisioning**: spin up the database while the agent runs.
-- **Disposable environments**: ideal for fast experiments; instances expire automatically.
-- **Isolated sandbox**: the agent operates in a dedicated database (`agent_sandbox` by default).
-- **Auditable autonomy**: one SQL statement per tool call with a full SQL trail.
-- **Schema-flexible workflow**: no fixed business schema or query templates are hardcoded.
+No fixed business schema or fixed query templates are hardcoded.
 
 ## What You Need
 
@@ -85,7 +78,7 @@ zero-agent-demo run \
 
 ```bash
 zero-agent-demo run \
-  "Summarize the latest TechCrunch stories into top 10 themes and list representative headlines." \
+  "Summarize the latest TechCrunch stories into top 10 themes, list representative headlines, and choose the most interesting story to deep dive the details." \
   --source-url "https://techcrunch.com/feed/"
 ```
 
@@ -129,6 +122,18 @@ Inspect SQL audit:
 
 ```bash
 zero-agent-demo audit <run_id>
+```
+
+Show TiDB Zero full connection details (including DB user and password):
+
+```bash
+zero-agent-demo conn <run_id>
+```
+
+If you need to hide password in terminal output:
+
+```bash
+zero-agent-demo conn <run_id> --redact-password
 ```
 
 ## Artifacts
