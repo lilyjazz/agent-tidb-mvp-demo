@@ -37,6 +37,18 @@ def resolve_non_empty(value: str | None, prompt_text: str) -> str:
         typer.echo("Input cannot be empty.")
 
 
+def is_timeout_like_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    name = type(exc).__name__.lower()
+    timeout_markers = [
+        "timeout",
+        "timed out",
+        "readtimeout",
+        "apitimeouterror",
+    ]
+    return any(marker in text for marker in timeout_markers) or any(marker in name for marker in timeout_markers)
+
+
 def validate_source_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -72,6 +84,16 @@ def run_command(
         help="Optional model organization header (used by some providers).",
     ),
     tag: str | None = typer.Option(None, "--tag", help="Override TIDB_ZERO_TAG for provisioning traceability."),
+    model_timeout_sec: int | None = typer.Option(
+        None,
+        "--model-timeout-sec",
+        help="Override model API timeout in seconds.",
+    ),
+    model_max_retries: int | None = typer.Option(
+        None,
+        "--model-max-retries",
+        help="Override model API max retries.",
+    ),
     max_tool_iterations: int | None = typer.Option(
         None,
         "--max-tool-iterations",
@@ -91,12 +113,23 @@ def run_command(
             model_base_url=model_base_url,
             model_organization=model_organization,
             tidb_zero_tag=tag,
+            model_timeout_sec=model_timeout_sec,
+            model_max_retries=model_max_retries,
             max_tool_iterations=max_tool_iterations,
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    result = asyncio.run(run_autonomous_demo(settings, resolved_goal, resolved_source_url))
+    try:
+        result = asyncio.run(run_autonomous_demo(settings, resolved_goal, resolved_source_url))
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"[ERROR] {exc}")
+        if is_timeout_like_error(exc):
+            typer.echo(
+                "[HINT] Model request timed out. Increase MODEL_TIMEOUT_SEC (for example 120 or 180), "
+                "or pass --model-timeout-sec 180 and retry."
+            )
+        raise typer.Exit(code=1)
     print(f"[RUN_COMPLETE] run_id={result.run_id} run_dir={result.run_dir}")
 
 

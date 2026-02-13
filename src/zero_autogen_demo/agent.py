@@ -118,6 +118,7 @@ class RunArtifacts:
     sql_audit_path: Path
     instance_path: Path
     final_path: Path
+    error_trace_path: Path
 
 
 @dataclass
@@ -319,18 +320,86 @@ def build_task(goal: str, source_url: str) -> str:
     )
 
 
+def is_timeout_like_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    name = type(exc).__name__.lower()
+    timeout_markers = [
+        "timeout",
+        "timed out",
+        "readtimeout",
+        "apitimeouterror",
+    ]
+    return any(marker in text for marker in timeout_markers) or any(marker in name for marker in timeout_markers)
+
+
+def normalize_openai_model_name(model_name: str) -> str:
+    trimmed = model_name.strip()
+    if trimmed.lower().startswith("openai/"):
+        return trimmed.split("/", 1)[1]
+    return trimmed
+
+
+def infer_openai_model_info(model_name: str) -> dict[str, Any]:
+    from autogen_ext.models.openai._model_info import get_info
+
+    normalized = normalize_openai_model_name(model_name)
+    try:
+        info = get_info(normalized)
+        if isinstance(info, dict):
+            return dict(info)
+    except Exception:  # noqa: BLE001
+        pass
+
+    lower = normalized.lower()
+    if "gpt-5" in lower or "codex" in lower:
+        family = "gpt-5"
+    elif "gpt-4o" in lower:
+        family = "gpt-4o"
+    elif lower.startswith("o1"):
+        family = "o1"
+    elif lower.startswith("o3"):
+        family = "o3"
+    elif lower.startswith("o4"):
+        family = "o4"
+    elif "gpt-4" in lower:
+        family = "gpt-4"
+    else:
+        family = "unknown"
+
+    return {
+        "vision": True,
+        "function_calling": True,
+        "json_output": True,
+        "family": family,
+        "structured_output": True,
+        "multiple_system_messages": True,
+    }
+
+
+def supports_reasoning_effort(model_info: dict[str, Any]) -> bool:
+    family = str(model_info.get("family", "")).lower()
+    return family in {"gpt-5", "o1", "o3", "o4"}
+
+
 def create_model_client(settings: Settings) -> Any:
     provider = settings.model_provider
-    timeout_sec = float(settings.http_timeout_sec)
+    timeout_sec = float(settings.model_timeout_sec)
 
     if provider in {"openai", "openai_compatible", "gemini"}:
         from autogen_ext.models.openai import OpenAIChatCompletionClient
 
+        resolved_model_name = normalize_openai_model_name(settings.model_name)
+        model_info = infer_openai_model_info(resolved_model_name)
+
         kwargs: dict[str, Any] = {
-            "model": settings.model_name,
+            "model": resolved_model_name,
             "api_key": settings.model_api_key,
             "timeout": timeout_sec,
+            "max_retries": settings.model_max_retries,
+            "model_info": model_info,
         }
+        if settings.model_reasoning_effort and supports_reasoning_effort(model_info):
+            kwargs["reasoning_effort"] = settings.model_reasoning_effort
         if settings.model_base_url:
             kwargs["base_url"] = settings.model_base_url
         if settings.model_organization:
@@ -344,7 +413,7 @@ def create_model_client(settings: Settings) -> Any:
             "model": settings.model_name,
             "api_key": settings.model_api_key,
             "timeout": timeout_sec,
-            "max_retries": 2,
+            "max_retries": settings.model_max_retries,
         }
         if settings.model_base_url:
             kwargs["base_url"] = settings.model_base_url
@@ -364,6 +433,7 @@ def make_run_artifacts(root: Path, run_id: str) -> RunArtifacts:
         sql_audit_path=run_dir / "sql_audit.jsonl",
         instance_path=run_dir / "tidb_zero_instance.json",
         final_path=run_dir / "final_answer.txt",
+        error_trace_path=run_dir / "error_traceback.txt",
     )
 
 
@@ -511,23 +581,35 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
         "MODEL",
         (
             f"provider={settings.model_provider} model={settings.model_name} "
-            f"base_url={settings.model_base_url or 'default'}"
+            f"base_url={settings.model_base_url or 'default'} "
+            f"timeout_sec={settings.model_timeout_sec} max_retries={settings.model_max_retries} "
+            f"reasoning_effort={settings.model_reasoning_effort or 'default'}"
         ),
     )
 
     sandbox = TiDBSandbox(instance=instance, database_name=settings.database_name)
     model_client: Any | None = None
+    step_log_failed = False
 
     try:
         sandbox.create_database_if_missing()
         sandbox.connect()
         sandbox.initialize_metadata_tables()
-        sandbox.log_run_start(
-            run_id,
-            goal,
-            source_url,
-            f"{settings.model_provider}:{settings.model_name}",
-        )
+        try:
+            sandbox.log_run_start(
+                run_id,
+                goal,
+                source_url,
+                f"{settings.model_provider}:{settings.model_name}",
+            )
+        except Exception as log_exc:  # noqa: BLE001
+            tracker.emit(
+                "OBSERVATION",
+                (
+                    "run log start persistence failed; continuing run. "
+                    f"reason={truncate_text(str(log_exc), 240)}"
+                ),
+            )
 
         tool_runtime = ToolRuntime(
             sandbox=sandbox,
@@ -570,8 +652,16 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
                 if len(payload_text) > 64000:
                     payload_text = payload_text[:63980] + "...[truncated]"
                 sandbox.log_step(run_id, step_no, event_type, payload_text)
-            except Exception:  # noqa: BLE001
-                tracker.emit("OBSERVATION", "step log persistence failed; continuing run")
+            except Exception as log_exc:  # noqa: BLE001
+                if not step_log_failed:
+                    step_log_failed = True
+                    tracker.emit(
+                        "OBSERVATION",
+                        (
+                            "step log persistence failed; continuing run with local event file only. "
+                            f"reason={truncate_text(str(log_exc), 240)}"
+                        ),
+                    )
 
             render_stream_event(event, tracker)
 
@@ -592,17 +682,39 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
 
         final_answer = tracker.final_answer or "Agent finished without a final text answer."
         artifacts.final_path.write_text(final_answer, encoding="utf-8")
-        sandbox.log_run_end(run_id, final_answer, status="completed")
+        try:
+            sandbox.log_run_end(run_id, final_answer, status="completed")
+        except Exception as log_exc:  # noqa: BLE001
+            tracker.emit(
+                "OBSERVATION",
+                (
+                    "run completion log persistence failed; run result is still valid. "
+                    f"reason={truncate_text(str(log_exc), 240)}"
+                ),
+            )
 
         return RunResult(run_id=run_id, run_dir=artifacts.run_dir, final_answer=final_answer)
 
     except Exception as exc:  # noqa: BLE001
         error_summary = f"Run failed: {exc}"
         tracker.emit("ERROR", error_summary)
-        tracker.emit("ERROR", truncate_text(traceback.format_exc(), 2000))
+        if is_timeout_like_error(exc):
+            tracker.emit(
+                "ERROR",
+                (
+                    "Model/API request timed out. Try increasing MODEL_TIMEOUT_SEC "
+                    "(for example 120 or 180) and retry."
+                ),
+            )
+        trace_text = traceback.format_exc()
+        artifacts.error_trace_path.write_text(trace_text, encoding="utf-8")
+        tracker.emit("ERROR", f"Traceback saved to {artifacts.error_trace_path}")
 
         if sandbox.is_connected:
-            sandbox.log_run_end(run_id, error_summary, status="failed")
+            try:
+                sandbox.log_run_end(run_id, error_summary, status="failed")
+            except Exception:  # noqa: BLE001
+                pass
         raise
 
     finally:

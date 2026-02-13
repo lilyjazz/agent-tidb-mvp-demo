@@ -92,12 +92,32 @@ def _resolve_model_base_url(provider: str, explicit_base_url: str | None) -> str
     return None
 
 
+def _normalize_reasoning_effort(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+
+    value = raw.strip().lower()
+    aliases = {
+        "xhigh": "high",
+        "very_high": "high",
+        "xh": "high",
+    }
+    value = aliases.get(value, value)
+
+    allowed = {"minimal", "low", "medium", "high"}
+    if value not in allowed:
+        expected = ", ".join(sorted(allowed | {"xhigh"}))
+        raise ValueError(f"Unsupported MODEL_REASONING_EFFORT '{raw}'. Supported values: {expected}")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     model_provider: str
     model_api_key: str
     model_base_url: str | None
     model_organization: str | None
+    model_reasoning_effort: str | None
     tidb_zero_invitation_code: str
     model_name: str
     tidb_zero_tag: str
@@ -106,6 +126,8 @@ class Settings:
     max_tool_iterations: int
     sql_row_limit: int
     http_timeout_sec: int
+    model_timeout_sec: int
+    model_max_retries: int
     fetch_max_chars: int
 
     @classmethod
@@ -116,11 +138,14 @@ class Settings:
         model_name: str | None = None,
         model_base_url: str | None = None,
         model_organization: str | None = None,
+        model_reasoning_effort: str | None = None,
         model_api_key: str | None = None,
         tidb_zero_tag: str | None = None,
         max_tool_iterations: int | None = None,
         sql_row_limit: int | None = None,
         http_timeout_sec: int | None = None,
+        model_timeout_sec: int | None = None,
+        model_max_retries: int | None = None,
         fetch_max_chars: int | None = None,
     ) -> "Settings":
         resolved_provider = _normalize_provider(model_provider or os.getenv("MODEL_PROVIDER", "openai"))
@@ -128,6 +153,9 @@ class Settings:
         resolved_model_api_key = _resolve_model_api_key(resolved_provider, model_api_key)
         resolved_model_base_url = _resolve_model_base_url(resolved_provider, model_base_url)
         resolved_model_organization = model_organization or _optional_env("MODEL_ORGANIZATION")
+        resolved_model_reasoning_effort = _normalize_reasoning_effort(
+            model_reasoning_effort or _optional_env("MODEL_REASONING_EFFORT")
+        )
         tidb_zero_invitation_code = _required_env("TIDB_ZERO_INVITATION_CODE")
 
         resolved_tag = tidb_zero_tag or os.getenv("TIDB_ZERO_TAG", "agent-demo")
@@ -136,6 +164,8 @@ class Settings:
         resolved_max_tool_iterations = max_tool_iterations or int(os.getenv("MAX_TOOL_ITERATIONS", "24"))
         resolved_sql_row_limit = sql_row_limit or int(os.getenv("SQL_ROW_LIMIT", "200"))
         resolved_http_timeout_sec = http_timeout_sec or int(os.getenv("HTTP_TIMEOUT_SEC", "20"))
+        resolved_model_timeout_sec = model_timeout_sec or int(os.getenv("MODEL_TIMEOUT_SEC", "120"))
+        resolved_model_max_retries = model_max_retries or int(os.getenv("MODEL_MAX_RETRIES", "3"))
         resolved_fetch_max_chars = fetch_max_chars or int(os.getenv("FETCH_MAX_CHARS", "60000"))
 
         return cls(
@@ -143,6 +173,7 @@ class Settings:
             model_api_key=resolved_model_api_key,
             model_base_url=resolved_model_base_url,
             model_organization=resolved_model_organization,
+            model_reasoning_effort=resolved_model_reasoning_effort,
             tidb_zero_invitation_code=tidb_zero_invitation_code,
             model_name=resolved_model,
             tidb_zero_tag=resolved_tag,
@@ -151,5 +182,7 @@ class Settings:
             max_tool_iterations=resolved_max_tool_iterations,
             sql_row_limit=resolved_sql_row_limit,
             http_timeout_sec=resolved_http_timeout_sec,
+            model_timeout_sec=resolved_model_timeout_sec,
+            model_max_retries=resolved_model_max_retries,
             fetch_max_chars=resolved_fetch_max_chars,
         )

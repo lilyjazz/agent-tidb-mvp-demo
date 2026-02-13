@@ -57,7 +57,22 @@ class TiDBSandbox:
             admin_conn.close()
 
     def connect(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
         self._conn = self._connect(self.database_name)
+
+    def _ensure_connection(self) -> None:
+        if self._conn is None:
+            self.connect()
+            return
+
+        try:
+            self._conn.ping(reconnect=True)
+        except Exception:  # noqa: BLE001
+            self.connect()
 
     def close(self) -> None:
         if self._conn is not None:
@@ -69,6 +84,7 @@ class TiDBSandbox:
         return self._conn is not None
 
     def execute_sql(self, sql: str, max_rows: int = 200) -> tuple[dict[str, Any], int]:
+        self._ensure_connection()
         if self._conn is None:
             raise RuntimeError("Database is not connected")
 
@@ -140,6 +156,7 @@ class TiDBSandbox:
             self.execute_sql(ddl)
 
     def log_run_start(self, run_id: str, goal: str, source_url: str, model_name: str) -> None:
+        self._ensure_connection()
         if self._conn is None:
             return
         with self._conn.cursor() as cur:
@@ -152,6 +169,7 @@ class TiDBSandbox:
             )
 
     def log_run_end(self, run_id: str, final_answer: str, status: str) -> None:
+        self._ensure_connection()
         if self._conn is None:
             return
         with self._conn.cursor() as cur:
@@ -167,6 +185,7 @@ class TiDBSandbox:
             )
 
     def log_step(self, run_id: str, step_no: int, event_type: str, payload: str) -> None:
+        self._ensure_connection()
         if self._conn is None:
             return
         with self._conn.cursor() as cur:
@@ -189,6 +208,7 @@ class TiDBSandbox:
         elapsed_ms: int,
         error_text: str | None,
     ) -> None:
+        self._ensure_connection()
         if self._conn is None:
             return
         with self._conn.cursor() as cur:

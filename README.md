@@ -59,6 +59,8 @@ Optional overrides:
 
 - `MODEL_BASE_URL`
 - `MODEL_ORGANIZATION`
+- `MODEL_TIMEOUT_SEC` (default `120`)
+- `MODEL_MAX_RETRIES` (default `3`)
 - `TIDB_ZERO_TAG`
 - `MAX_TOOL_ITERATIONS`
 
@@ -115,6 +117,12 @@ You can also override model settings per run (without editing `.env`):
 
 ```bash
 zero-agent-demo run --provider anthropic --model claude-3-5-sonnet-latest
+```
+
+If model calls are slow in your network, increase timeout for this run:
+
+```bash
+zero-agent-demo run --model-timeout-sec 180 --model-max-retries 4
 ```
 
 ### 1) Earthquakes (geoscience)
@@ -203,6 +211,7 @@ Run artifacts are stored under `.runs/<run_id>/`:
 - `events.jsonl` raw AutoGen stream event snapshots
 - `sql_audit.jsonl` executed SQL trail
 - `final_answer.txt` final answer
+- `error_traceback.txt` full traceback for failed runs
 - `tidb_zero_instance.json` connection credentials (mode `600`)
 
 `tidb_zero_instance.json` contains sensitive credentials. Keep it secure.
