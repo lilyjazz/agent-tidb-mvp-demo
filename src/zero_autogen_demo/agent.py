@@ -44,6 +44,16 @@ def normalize_sql(raw_sql: str) -> str:
     return sql
 
 
+def extract_json_argument(arguments: str, key: str) -> str | None:
+    parsed = safe_json_loads(arguments)
+    if isinstance(parsed, dict):
+        value = parsed.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+    return None
+
+
 def classify_sql(sql: str) -> str:
     first = sql.lstrip().split(None, 1)
     token = first[0].upper() if first else ""
@@ -195,6 +205,13 @@ class ToolRuntime:
         }
         return json_dumps(payload)
 
+    def log_thought(self, thought: str) -> str:
+        """Record a concise thought summary before taking an action."""
+        cleaned = thought.strip()
+        if not cleaned:
+            return json_dumps({"ok": False, "error": "thought cannot be empty"})
+        return json_dumps({"ok": True, "thought": truncate_text(cleaned, 800)})
+
     def schema_inspect(self) -> str:
         """Inspect current database schema and return tables/columns metadata as JSON."""
         sql = """
@@ -279,6 +296,8 @@ def build_system_message(database_name: str) -> str:
         "You have full SQL privileges in this schema. "
         "Do not assume predefined business tables. Design your own schema based on observed data. "
         "Use tools to fetch data, inspect schema, and execute SQL. "
+        "Before each meaningful action, call log_thought with a concise 1-2 sentence rationale. "
+        "Use concise thought summaries only, not hidden chain-of-thought. "
         "When using sql_exec, execute exactly one SQL statement per call. "
         "Show robust behavior: inspect data first, create schema, ingest representative records, then analyze. "
         "Your final response must include: (1) schema rationale, (2) key SQL evidence, (3) answer. "
@@ -310,7 +329,6 @@ def create_model_client(settings: Settings) -> Any:
         kwargs: dict[str, Any] = {
             "model": settings.model_name,
             "api_key": settings.model_api_key,
-            "parallel_tool_calls": False,
             "timeout": timeout_sec,
         }
         if settings.model_base_url:
@@ -364,23 +382,37 @@ def save_instance_credentials(artifacts: RunArtifacts, instance: ZeroInstance) -
 
 
 def extract_sql_argument(arguments: str) -> str:
-    parsed = safe_json_loads(arguments)
-    if isinstance(parsed, dict):
-        sql_value = parsed.get("sql")
-        if isinstance(sql_value, str):
-            return normalize_sql(sql_value)
+    sql_value = extract_json_argument(arguments, "sql")
+    if sql_value is not None:
+        return normalize_sql(sql_value)
     return normalize_sql(arguments)
+
+
+def extract_thought_argument(arguments: str) -> str:
+    value = extract_json_argument(arguments, "thought")
+    if value is not None:
+        return value
+    return arguments.strip()
 
 
 def render_stream_event(event: Any, tracker: RunTracker) -> str | None:
     event_type = type(event).__name__
+
+    if event_type == "ThoughtEvent":
+        thought = str(getattr(event, "content", "")).strip()
+        if thought:
+            tracker.emit("THINK", truncate_text(thought, 1200))
+        return None
 
     if event_type == "ToolCallRequestEvent":
         calls = getattr(event, "content", []) or []
         for call in calls:
             name = str(getattr(call, "name", "unknown_tool"))
             arguments = str(getattr(call, "arguments", ""))
-            if name == "sql_exec":
+            if name == "log_thought":
+                thought = extract_thought_argument(arguments)
+                tracker.emit("THINK", truncate_text(thought, 1200))
+            elif name == "sql_exec":
                 sql = extract_sql_argument(arguments)
                 tracker.emit("SQL", f"[{classify_sql(sql)}] {truncate_text(sql, 1200)}")
             else:
@@ -393,6 +425,11 @@ def render_stream_event(event: Any, tracker: RunTracker) -> str | None:
             name = str(getattr(result, "name", "unknown_tool"))
             content = str(getattr(result, "content", ""))
             is_error = bool(getattr(result, "is_error", False))
+
+            if name == "log_thought":
+                if is_error:
+                    tracker.emit("OBSERVATION", f"log_thought error: {truncate_text(content, 360)}")
+                continue
 
             if name == "sql_exec":
                 parsed = safe_json_loads(content)
@@ -507,6 +544,7 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             name="autonomous_data_agent",
             model_client=model_client,
             tools=[
+                tool_runtime.log_thought,
                 tool_runtime.http_fetch,
                 tool_runtime.schema_inspect,
                 tool_runtime.sql_exec,

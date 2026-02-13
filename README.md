@@ -160,7 +160,7 @@ zero-agent-demo run \
 Expected CLI tags:
 
 - `[TIDB_ZERO]` provisioning details, expiration, credentials file path
-- `[THINK]` model reasoning messages
+- `[THINK]` agent thought summaries before major actions
 - `[ACTION]` non-SQL tool calls (for example `http_fetch`, `schema_inspect`)
 - `[SQL]` SQL statements requested by the agent
 - `[OBSERVATION]` tool execution outcomes
