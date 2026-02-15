@@ -16,14 +16,12 @@ python3 -m venv .venv
 
 ### 2. Configure (Choose One)
 
-**Option A: I have a Codex / Claude subscription (No API Key needed!)**
-If you have the `codex` or `claude` CLI installed and logged in:
-```bash
-# No .env needed! Just run:
-.venv/bin/zero-agent-demo run --provider codex_subscription
-```
+#### Option A: I have a Codex / Claude subscription (No API Key needed! :sparkles:)
+If you have the `codex` or `claude` CLI installed and logged in.
 
-**Option B: I have an API Key (OpenAI / Anthropic / Gemini)**
+No .env needed! Just run the step 3 :rocket:
+
+#### Option B: I have an API Key (OpenAI / Anthropic / Gemini) :hammer:**
 ```bash
 cp .env.example .env
 # Edit .env and set MODEL_API_KEY=sk-...
@@ -31,7 +29,7 @@ cp .env.example .env
 
 ### 3. Run
 
-**One-Liner (Earthquake Analysis):**
+**:flight_departure: One-Liner (Earthquake Analysis):**
 ```bash
 .venv/bin/zero-agent-demo run \
   "Find where magnitude >= 4 earthquakes happened last 7 days and summarize the lastest clusters and biggest clusters." \
