@@ -1,239 +1,109 @@
-# TiDB Zero + AutoGen General Agent CLI Demo
+# TiDB Zero Agent Demo
 
-This repository is a minimal CLI MVP that demonstrates a **general AutoGen agent** running against **TiDB Cloud Zero**.
+> **Autonomous SQL Agent running on TiDB Zero (Serverless).**
+> Spawns a fresh database, fetches real-time data, designs a schema, and writes SQL to answer your questions.
 
-It is designed for customer-facing demos where you need to show the full chain clearly: from data fetch to schema decisions, SQL execution, and auditable results.
+## ⚡ Quick Start
 
-The demo emphasizes three things in the terminal output:
+### 1. Install
 
-1. **TiDB Zero provisioning** happens at runtime.
-2. The agent **handles schema decisions** from public data.
-3. The agent **autonomously writes and executes SQL** to answer a goal.
-
-No fixed business schema or fixed query templates are hardcoded.
-
-## Core Features
-
-- **Per-task isolated TiDB Zero environment**: each `run` provisions a fresh ephemeral TiDB Zero instance.
-- **General-agent behavior**: the agent decides whether to reuse existing tables or create new schema based on current data.
-- **Autonomous SQL execution**: the agent can create tables, ingest data, and query insights directly in the sandbox DB.
-- **Transparent runtime trace**: CLI prints `[TIDB_ZERO]`, `[THINK]`, `[ACTION]`, `[SQL]`, `[OBSERVATION]`, `[FINAL]`.
-- **Strong observability**: `replay` restores the full process, `audit` shows SQL trail, `conn` shows connection details for manual verification.
-- **Subscription login modes**: supports `codex_subscription` and `claude_subscription` so users can run without entering API keys in project config.
-
-## Business Value for Customers
-
-- **Fast PoC delivery**: show a complete "agent + data" workflow in minutes with public feeds.
-- **Trust and explainability**: customers see exactly what the agent did, not just a final answer.
-- **Safe experimentation**: isolated disposable TiDB Zero instances reduce blast radius and simplify demos.
-- **Governance readiness**: SQL audit trail and replayable runs support internal review and compliance conversations.
-- **Reusable sales/solution pattern**: one CLI workflow works across domains (finance, weather, media, dev community, and more).
-
-## What You Need
-
-- Python 3.10+
-- One model access method:
-  - API key mode (OpenAI / Anthropic / Gemini / OpenAI-compatible), or
-  - Subscription mode (`codex_subscription` or `claude_subscription`) with local CLI login
-
-## Install
+We recommend [uv](https://github.com/astral-sh/uv) for instant setup:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+# Clone & Sync
+git clone https://github.com/lilyjazz/agent-tidb-mvp-demo.git
+cd agent-tidb-mvp-demo
+uv sync
 ```
 
-## Configure
+*(Or use standard pip: `python -m venv .venv && source .venv/bin/activate && pip install -e .`)*
 
+### 2. Configure (Choose One)
+
+**Option A: I have an API Key (OpenAI / Anthropic / Gemini)**
 ```bash
 cp .env.example .env
+# Edit .env and set MODEL_API_KEY=sk-...
 ```
 
-Fill `.env` with at least:
-
-- `MODEL_PROVIDER`
-- `MODEL_NAME`
-
-For this demo, **prefer one-time local login first** (subscription mode, no API key in project env):
-
-```env
-# Codex subscription mode
-MODEL_PROVIDER=codex_subscription
-MODEL_NAME=gpt-5.3-codex
-CODEX_SUBSCRIPTION_BIN=codex
-```
-
-or
-
-```env
-# Claude subscription mode
-MODEL_PROVIDER=claude_subscription
-MODEL_NAME=sonnet
-CLAUDE_SUBSCRIPTION_BIN=claude
-```
-
-One-time local login:
-
+**Option B: I have a GitHub Copilot / Claude subscription (No API Key needed!)**
+If you have the `codex` or `claude` CLI installed and logged in:
 ```bash
-# Codex subscription login
-codex login
-
-# Claude subscription login
-claude
-# then run /login in the interactive session
+# No .env needed! Just run:
+uv run zero-agent-demo run --provider codex_subscription
 ```
 
-API-key mode is also supported, but treated as secondary for this demo. For OpenAI / Anthropic / Gemini / OpenAI-compatible examples, see comments in `.env.example`.
+### 3. Run
 
-Optional overrides:
-
-- `MODEL_BASE_URL`
-- `MODEL_ORGANIZATION`
-- `MODEL_TIMEOUT_SEC` (default `120`)
-- `MODEL_MAX_RETRIES` (default `3`)
-- `CODEX_SUBSCRIPTION_BIN` (default `codex`)
-- `CLAUDE_SUBSCRIPTION_BIN` (default `claude`)
-- `TIDB_ZERO_TAG`
-- `MAX_TOOL_ITERATIONS`
-
-## Run Cookbook
-
-You can use any public URL. Here are five examples from different domains:
-
-### One-click Codex subscription E2E
-
-If you just want to run the full local E2E flow with minimal setup:
-
+**One-Liner (Earthquake Analysis):**
 ```bash
-./run_codex_subscription_e2e.sh
-```
-
-Optional variants:
-
-```bash
-# Custom goal and source URL
-./run_codex_subscription_e2e.sh "Your goal" "https://your-source-url"
-```
-
-### Interactive mode (prompt-based)
-
-If you run `run` without arguments, the CLI will prompt you step by step:
-
-```bash
-zero-agent-demo run
-```
-
-You will then be prompted for:
-
-- goal / question
-- source URL
-
-You can also override model settings per run (without editing `.env`):
-
-```bash
-zero-agent-demo run --provider anthropic --model claude-3-5-sonnet-latest
-```
-
-If model calls are slow in your network, increase timeout for this run:
-
-```bash
-zero-agent-demo run --model-timeout-sec 180 --model-max-retries 4
-```
-
-### 1) Earthquakes (geoscience)
-
-```bash
-zero-agent-demo run \
-  "Find where magnitude >= 4 earthquakes are concentrated in the last day and summarize notable clusters." \
+uv run zero-agent-demo run \
+  "Find where magnitude >= 4 earthquakes happened today and summarize clusters." \
   --source-url "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
 ```
 
-### 2) Weather forecast (climate)
+---
 
+## 🍳 Cookbook
+
+Try these live data sources. The agent handles the schema automatically.
+
+**Startup Trends (TechCrunch):**
 ```bash
-zero-agent-demo run \
-  "Analyze Tokyo's next 48 hours temperature trend and highlight the biggest rise and drop windows." \
-  --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
-```
-
-### 3) Startup and tech media
-
-```bash
-zero-agent-demo run \
-  "Summarize the latest TechCrunch stories into top 10 themes, list representative headlines, and choose the most interesting story to deep dive the details." \
+uv run zero-agent-demo run \
+  "Summarize top 5 startup trends from today's feed." \
   --source-url "https://techcrunch.com/feed/"
 ```
 
-### 4) Space industry news
-
+**Weather Analysis (Tokyo):**
 ```bash
-zero-agent-demo run \
-  "Summarize recent space industry updates and identify recurring organizations and mission patterns." \
-  --source-url "https://api.spaceflightnewsapi.net/v4/articles/?limit=50&format=json"
+uv run zero-agent-demo run \
+  "Analyze Tokyo's next 48h temp trend. Highlight the biggest drop." \
+  --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
 ```
 
-### 5) Developer community trends
-
+**Developer Topics (Lobsters):**
 ```bash
-zero-agent-demo run \
-  "Analyze current developer-community topics and summarize the most recurring themes and tags." \
+uv run zero-agent-demo run \
+  "What are the dominant engineering topics right now?" \
   --source-url "https://lobste.rs/hottest.json"
 ```
 
-Expected CLI tags:
+---
 
-- `[TIDB_ZERO]` provisioning details, expiration, credentials file path
-- `[THINK]` agent thought summaries before major actions
-- `[ACTION]` non-SQL tool calls (for example `http_fetch`, `schema_inspect`)
-- `[SQL]` SQL statements requested by the agent
-- `[OBSERVATION]` tool execution outcomes
-- `[FINAL]` final answer
-- `[AUTONOMY_PROOF]` SQL counts and detected created tables
+## 🛠 How It Works
 
-## Replay and Audit
+1.  **Provision:** CLI requests a fresh, ephemeral TiDB Zero instance (no signup needed).
+2.  **Fetch:** Agent grabs data from your URL (JSON/XML/CSV).
+3.  **Design:** Agent analyzes data structure and `CREATE TABLE`.
+4.  **Ingest:** Agent inserts data into TiDB.
+5.  **Analyze:** Agent writes SQL queries to answer your question.
+6.  **Cleanup:** Database expires automatically.
 
-After a run, you get a `run_id`.
+## 🔍 Audit & Replay
 
-Replay full timeline:
-
-```bash
-zero-agent-demo replay <run_id>
-```
-
-Inspect SQL audit:
+Every run is recorded in `.runs/`.
 
 ```bash
-zero-agent-demo audit <run_id>
+# Replay the thought process
+uv run zero-agent-demo replay <run_id>
+
+# See exactly what SQL was executed
+uv run zero-agent-demo audit <run_id>
+
+# Get database connection string (to connect manually)
+uv run zero-agent-demo conn <run_id>
 ```
 
-Show TiDB Zero full connection details (including DB user and password):
+---
 
-```bash
-zero-agent-demo conn <run_id>
-```
+## Advanced Configuration
 
-If you need to hide password in terminal output:
+Full list of environment variables:
 
-```bash
-zero-agent-demo conn <run_id> --redact-password
-```
-
-## Artifacts
-
-Run artifacts are stored under `.runs/<run_id>/`:
-
-- `timeline.jsonl` human-readable flow lines
-- `events.jsonl` raw AutoGen stream event snapshots
-- `sql_audit.jsonl` executed SQL trail
-- `final_answer.txt` final answer
-- `error_traceback.txt` full traceback for failed runs
-- `tidb_zero_instance.json` connection credentials (mode `600`)
-
-`tidb_zero_instance.json` contains sensitive credentials. Keep it secure.
-
-## Notes
-
-- TiDB Zero instances are disposable and expire.
-- This demo intentionally gives the agent broad SQL freedom inside a dedicated sandbox database (`agent_sandbox` by default).
-- The agent is constrained to one SQL statement per tool call for clean auditing.
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `MODEL_PROVIDER` | `openai`, `anthropic`, `gemini`, `codex_subscription` | `openai` |
+| `MODEL_API_KEY` | Required if using API providers | - |
+| `MODEL_NAME` | Specific model version (e.g. `gpt-4o`) | Provider default |
+| `TIDB_ZERO_TAG` | Tag for the ephemeral instance | `agent-demo` |
