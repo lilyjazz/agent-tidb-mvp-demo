@@ -32,7 +32,7 @@ cp .env.example .env
 **:flight_departure: One-Liner (Earthquake Analysis):**
 ```bash
 .venv/bin/zero-agent-demo run \
-  "Find where magnitude >= 4 earthquakes happened last 7 days and summarize the lastest clusters and biggest clusters." \
+  "Find where magnitude >= 4 earthquakes happened last 24 hours and summarize the lastest clusters." \
   --source-url "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
 ```
 
