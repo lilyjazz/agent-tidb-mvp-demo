@@ -52,7 +52,7 @@ Try these live data sources. The agent handles the schema automatically.
 **Startup Trends (TechCrunch):**
 ```bash
 .venv/bin/zero-agent-demo run \
-  "Summarize top 5 startup trends from today's feed." \
+  "Summarize top 3 startup trends from today's feed." \
   --source-url "https://techcrunch.com/feed/"
 ```
 
