@@ -19,6 +19,7 @@ No fixed business schema or fixed query templates are hardcoded.
 - **Autonomous SQL execution**: the agent can create tables, ingest data, and query insights directly in the sandbox DB.
 - **Transparent runtime trace**: CLI prints `[TIDB_ZERO]`, `[THINK]`, `[ACTION]`, `[SQL]`, `[OBSERVATION]`, `[FINAL]`.
 - **Strong observability**: `replay` restores the full process, `audit` shows SQL trail, `conn` shows connection details for manual verification.
+- **Subscription login modes**: supports `codex_subscription` and `claude_subscription` so users can run without entering API keys in project config.
 
 ## Business Value for Customers
 
@@ -31,8 +32,9 @@ No fixed business schema or fixed query templates are hardcoded.
 ## What You Need
 
 - Python 3.10+
-- A model provider key (for OpenAI, Anthropic/Claude, Gemini, or another OpenAI-compatible endpoint)
-- A TiDB Zero invitation code (`TIDB_ZERO_INVITATION_CODE`)
+- One model access method:
+  - API key mode (OpenAI / Anthropic / Gemini / OpenAI-compatible), or
+  - Subscription mode (`codex_subscription` or `claude_subscription`) with local CLI login
 
 ## Install
 
@@ -52,8 +54,39 @@ Fill `.env` with at least:
 
 - `MODEL_PROVIDER`
 - `MODEL_NAME`
-- `MODEL_API_KEY`
-- `TIDB_ZERO_INVITATION_CODE`
+
+TiDB Zero invitation code is no longer required.
+
+For this demo, **prefer one-time local login first** (subscription mode, no API key in project env):
+
+```env
+# Codex subscription mode
+MODEL_PROVIDER=codex_subscription
+MODEL_NAME=gpt-5.3-codex
+CODEX_SUBSCRIPTION_BIN=codex
+```
+
+or
+
+```env
+# Claude subscription mode
+MODEL_PROVIDER=claude_subscription
+MODEL_NAME=sonnet
+CLAUDE_SUBSCRIPTION_BIN=claude
+```
+
+One-time local login:
+
+```bash
+# Codex subscription login
+codex login
+
+# Claude subscription login
+claude
+# then run /login in the interactive session
+```
+
+API-key mode is also supported, but treated as secondary for this demo. For OpenAI / Anthropic / Gemini / OpenAI-compatible examples, see comments in `.env.example`.
 
 Optional overrides:
 
@@ -61,44 +94,29 @@ Optional overrides:
 - `MODEL_ORGANIZATION`
 - `MODEL_TIMEOUT_SEC` (default `120`)
 - `MODEL_MAX_RETRIES` (default `3`)
+- `CODEX_SUBSCRIPTION_BIN` (default `codex`)
+- `CLAUDE_SUBSCRIPTION_BIN` (default `claude`)
 - `TIDB_ZERO_TAG`
 - `MAX_TOOL_ITERATIONS`
-
-Provider quick examples:
-
-```env
-# OpenAI
-MODEL_PROVIDER=openai
-MODEL_NAME=gpt-4o-mini
-MODEL_API_KEY=<openai_key>
-```
-
-```env
-# Claude (Anthropic)
-MODEL_PROVIDER=anthropic
-MODEL_NAME=claude-3-5-sonnet-latest
-MODEL_API_KEY=<anthropic_key>
-```
-
-```env
-# Gemini (Google OpenAI-compatible endpoint)
-MODEL_PROVIDER=gemini
-MODEL_NAME=gemini-2.0-flash
-MODEL_API_KEY=<gemini_key>
-# MODEL_BASE_URL is optional for gemini; default is set automatically
-```
-
-```env
-# Any OpenAI-compatible gateway (for example OpenRouter or internal proxy)
-MODEL_PROVIDER=openai_compatible
-MODEL_NAME=<provider_model_name>
-MODEL_API_KEY=<gateway_key>
-MODEL_BASE_URL=<gateway_base_url>
-```
 
 ## Run Cookbook
 
 You can use any public URL. Here are five examples from different domains:
+
+### One-click Codex subscription E2E
+
+If you just want to run the full local E2E flow with minimal setup:
+
+```bash
+./run_codex_subscription_e2e.sh
+```
+
+Optional variants:
+
+```bash
+# Custom goal and source URL
+./run_codex_subscription_e2e.sh "Your goal" "https://your-source-url"
+```
 
 ### Interactive mode (prompt-based)
 

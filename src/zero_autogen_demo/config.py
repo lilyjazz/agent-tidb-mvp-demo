@@ -5,7 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SUPPORTED_MODEL_PROVIDERS = {"openai", "anthropic", "gemini", "openai_compatible"}
+SUPPORTED_MODEL_PROVIDERS = {
+    "openai",
+    "anthropic",
+    "gemini",
+    "openai_compatible",
+    "claude_subscription",
+    "codex_subscription",
+}
 
 
 def _optional_env(name: str) -> str | None:
@@ -13,17 +20,14 @@ def _optional_env(name: str) -> str | None:
     return value or None
 
 
-def _required_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise ValueError(f"Missing required environment variable: {name}")
-    return value
-
-
 def _normalize_provider(raw: str) -> str:
     provider = raw.strip().lower()
     aliases = {
         "claude": "anthropic",
+        "cluade": "anthropic",
+        "claude_subscription": "claude_subscription",
+        "cluade_subscription": "claude_subscription",
+        "codex": "codex_subscription",
         "openai-compatible": "openai_compatible",
         "openai_compat": "openai_compatible",
     }
@@ -40,11 +44,13 @@ def _default_model_for_provider(provider: str) -> str:
         "anthropic": "claude-3-5-sonnet-latest",
         "gemini": "gemini-2.0-flash",
         "openai_compatible": "gpt-4o-mini",
+        "claude_subscription": "sonnet",
+        "codex_subscription": "gpt-5.3-codex",
     }
     return defaults[provider]
 
 
-def _resolve_model_api_key(provider: str, explicit_key: str | None) -> str:
+def _resolve_model_api_key(provider: str, explicit_key: str | None) -> str | None:
     if explicit_key and explicit_key.strip():
         return explicit_key.strip()
 
@@ -57,12 +63,17 @@ def _resolve_model_api_key(provider: str, explicit_key: str | None) -> str:
         "anthropic": ["ANTHROPIC_API_KEY"],
         "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "openai_compatible": ["OPENAI_API_KEY"],
+        "claude_subscription": ["ANTHROPIC_API_KEY"],
+        "codex_subscription": ["OPENAI_API_KEY"],
     }
 
     for env_name in provider_candidates.get(provider, []):
         value = _optional_env(env_name)
         if value:
             return value
+
+    if provider in {"claude_subscription", "codex_subscription"}:
+        return None
 
     fallback = _optional_env("OPENAI_API_KEY")
     if fallback:
@@ -114,11 +125,12 @@ def _normalize_reasoning_effort(raw: str | None) -> str | None:
 @dataclass(frozen=True)
 class Settings:
     model_provider: str
-    model_api_key: str
+    model_api_key: str | None
     model_base_url: str | None
     model_organization: str | None
     model_reasoning_effort: str | None
-    tidb_zero_invitation_code: str
+    codex_subscription_bin: str
+    claude_subscription_bin: str
     model_name: str
     tidb_zero_tag: str
     database_name: str
@@ -140,6 +152,8 @@ class Settings:
         model_organization: str | None = None,
         model_reasoning_effort: str | None = None,
         model_api_key: str | None = None,
+        codex_subscription_bin: str | None = None,
+        claude_subscription_bin: str | None = None,
         tidb_zero_tag: str | None = None,
         max_tool_iterations: int | None = None,
         sql_row_limit: int | None = None,
@@ -156,7 +170,8 @@ class Settings:
         resolved_model_reasoning_effort = _normalize_reasoning_effort(
             model_reasoning_effort or _optional_env("MODEL_REASONING_EFFORT")
         )
-        tidb_zero_invitation_code = _required_env("TIDB_ZERO_INVITATION_CODE")
+        resolved_codex_subscription_bin = codex_subscription_bin or os.getenv("CODEX_SUBSCRIPTION_BIN", "codex")
+        resolved_claude_subscription_bin = claude_subscription_bin or os.getenv("CLAUDE_SUBSCRIPTION_BIN", "claude")
 
         resolved_tag = tidb_zero_tag or os.getenv("TIDB_ZERO_TAG", "agent-demo")
         resolved_db_name = os.getenv("TIDB_DB_NAME", "agent_sandbox")
@@ -174,7 +189,8 @@ class Settings:
             model_base_url=resolved_model_base_url,
             model_organization=resolved_model_organization,
             model_reasoning_effort=resolved_model_reasoning_effort,
-            tidb_zero_invitation_code=tidb_zero_invitation_code,
+            codex_subscription_bin=resolved_codex_subscription_bin,
+            claude_subscription_bin=resolved_claude_subscription_bin,
             model_name=resolved_model,
             tidb_zero_tag=resolved_tag,
             database_name=resolved_db_name,

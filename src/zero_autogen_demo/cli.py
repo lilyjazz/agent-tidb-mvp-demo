@@ -70,7 +70,10 @@ def run_command(
     provider: str | None = typer.Option(
         None,
         "--provider",
-        help="Model provider override: openai, anthropic, gemini, or openai_compatible.",
+        help=(
+            "Model provider override: openai, anthropic, gemini, openai_compatible, "
+            "claude_subscription, or codex_subscription."
+        ),
     ),
     model: str | None = typer.Option(None, "--model", help="Override model name (default from MODEL_NAME)."),
     model_base_url: str | None = typer.Option(

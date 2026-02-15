@@ -36,9 +36,8 @@ class ZeroInstance:
         return parsed._replace(netloc=netloc).geturl()
 
 
-def provision_zero_instance(invitation_code: str, tag: str, timeout_sec: int = 20) -> ZeroInstance:
+def provision_zero_instance(tag: str, timeout_sec: int = 20) -> ZeroInstance:
     payload = {
-        "invitationCode": invitation_code,
         "tag": tag,
     }
 

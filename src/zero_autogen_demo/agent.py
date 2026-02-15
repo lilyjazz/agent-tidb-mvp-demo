@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import traceback
 import uuid
 from dataclasses import dataclass, field
@@ -23,6 +27,8 @@ CREATE_TABLE_RE = re.compile(
     r"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([a-zA-Z0-9_.]+)`?",
     flags=re.IGNORECASE,
 )
+
+SUBSCRIPTION_PROVIDERS = {"claude_subscription", "codex_subscription"}
 
 
 def utc_now_iso() -> str:
@@ -332,6 +338,391 @@ def is_timeout_like_error(exc: Exception) -> bool:
     return any(marker in text for marker in timeout_markers) or any(marker in name for marker in timeout_markers)
 
 
+def is_subscription_provider(provider: str) -> bool:
+    return provider in SUBSCRIPTION_PROVIDERS
+
+
+def ensure_subscription_cli_available(settings: Settings) -> None:
+    if settings.model_provider == "codex_subscription":
+        if shutil.which(settings.codex_subscription_bin) is None:
+            raise RuntimeError(
+                f"Codex subscription mode requires '{settings.codex_subscription_bin}' in PATH. "
+                "Install Codex CLI and run `codex login` first."
+            )
+    if settings.model_provider == "claude_subscription":
+        if shutil.which(settings.claude_subscription_bin) is None:
+            raise RuntimeError(
+                f"Claude subscription mode requires '{settings.claude_subscription_bin}' in PATH. "
+                "Install Claude Code CLI and run `claude` (or `/login`) first."
+            )
+
+
+def extract_first_json_object(text: str) -> dict[str, Any] | None:
+    direct = safe_json_loads(text)
+    if isinstance(direct, dict):
+        return direct
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    sliced = text[start : end + 1]
+    parsed = safe_json_loads(sliced)
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
+def build_subscription_step_prompt(
+    *,
+    goal: str,
+    source_url: str,
+    history: list[dict[str, Any]],
+    database_name: str,
+) -> str:
+    history_window = history[-8:]
+    history_json = json_dumps(history_window)
+    return (
+        "You are controlling a tool-using data agent loop.\n"
+        "Return exactly one JSON object with this schema and no markdown/code fences:\n"
+        '{"thought":"short rationale","tool_call":{"name":"http_fetch|schema_inspect|sql_exec","args":{}},"final_answer":null}\n'
+        "or\n"
+        '{"thought":"short rationale","tool_call":null,"final_answer":"final answer with SQL evidence"}\n\n'
+        "Rules:\n"
+        "- Keep `thought` to one or two short sentences.\n"
+        "- Use only one tool call per step.\n"
+        "- Tool args contract: http_fetch -> {\"url\":\"...\"}; schema_inspect -> {}; sql_exec -> {\"sql\":\"...\"}.\n"
+        "- `sql_exec` must contain exactly one SQL statement in args.sql.\n"
+        "- If task is complete, set final_answer and tool_call=null.\n"
+        "- Do not include any keys outside the required schema.\n\n"
+        f"Task goal: {goal}\n"
+        f"Public source URL: {source_url}\n"
+        f"Active database schema: {database_name}\n"
+        "Recent steps JSON:\n"
+        f"{history_json}\n"
+    )
+
+
+def subscription_decision_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["thought", "tool_call", "final_answer"],
+        "properties": {
+            "thought": {"type": "string"},
+            "tool_call": {
+                "anyOf": [
+                    {"type": "null"},
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["name", "args"],
+                        "properties": {
+                            "name": {"type": "string", "const": "http_fetch"},
+                            "args": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["url"],
+                                "properties": {
+                                    "url": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["name", "args"],
+                        "properties": {
+                            "name": {"type": "string", "const": "schema_inspect"},
+                            "args": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": [],
+                                "properties": {},
+                            },
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["name", "args"],
+                        "properties": {
+                            "name": {"type": "string", "const": "sql_exec"},
+                            "args": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["sql"],
+                                "properties": {
+                                    "sql": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                ]
+            },
+            "final_answer": {"type": ["string", "null"]},
+        },
+    }
+
+
+def run_codex_subscription_prompt(settings: Settings, prompt: str) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
+        output_path = Path(tmp.name)
+
+    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as tmp_schema:
+        schema_path = Path(tmp_schema.name)
+        tmp_schema.write(json.dumps(subscription_decision_schema()))
+
+    cmd = [
+        settings.codex_subscription_bin,
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--model",
+        settings.model_name,
+        "--output-schema",
+        str(schema_path),
+        "--output-last-message",
+        str(output_path),
+        prompt,
+    ]
+
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=settings.model_timeout_sec,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Codex CLI binary not found: {settings.codex_subscription_bin}. Install Codex CLI first."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Codex CLI timed out after {settings.model_timeout_sec}s") from exc
+
+    try:
+        output_text = output_path.read_text(encoding="utf-8").strip() if output_path.exists() else ""
+    finally:
+        if output_path.exists():
+            output_path.unlink(missing_ok=True)
+        if schema_path.exists():
+            schema_path.unlink(missing_ok=True)
+
+    if not output_text:
+        output_text = (completed.stdout or "").strip()
+
+    if not output_text:
+        stderr_json = extract_first_json_object(completed.stderr or "")
+        if isinstance(stderr_json, dict):
+            output_text = json_dumps(stderr_json)
+
+    if completed.returncode != 0 and not output_text:
+        stderr = truncate_text((completed.stderr or "").strip(), 1800)
+        raise RuntimeError(f"Codex CLI failed with code {completed.returncode}: {stderr}")
+
+    if not output_text:
+        raise RuntimeError("Codex CLI returned empty output")
+
+    return output_text
+
+
+def run_claude_subscription_prompt(settings: Settings, prompt: str) -> str:
+    cmd = [
+        settings.claude_subscription_bin,
+        "-p",
+        "--output-format",
+        "text",
+        "--json-schema",
+        json.dumps(subscription_decision_schema()),
+        "--max-turns",
+        "1",
+        "--model",
+        settings.model_name,
+        "--tools",
+        "",
+        prompt,
+    ]
+
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=settings.model_timeout_sec,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Claude CLI binary not found: {settings.claude_subscription_bin}. Install Claude Code CLI first."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Claude CLI timed out after {settings.model_timeout_sec}s") from exc
+
+    output_text = (completed.stdout or "").strip()
+    if completed.returncode != 0 and not output_text:
+        stderr = truncate_text((completed.stderr or "").strip(), 500)
+        raise RuntimeError(f"Claude CLI failed with code {completed.returncode}: {stderr}")
+
+    if not output_text:
+        raise RuntimeError("Claude CLI returned empty output")
+
+    return output_text
+
+
+async def request_subscription_decision(settings: Settings, prompt: str) -> str:
+    if settings.model_provider == "codex_subscription":
+        return await asyncio.to_thread(run_codex_subscription_prompt, settings, prompt)
+    if settings.model_provider == "claude_subscription":
+        return await asyncio.to_thread(run_claude_subscription_prompt, settings, prompt)
+    raise RuntimeError(f"Unsupported subscription provider: {settings.model_provider}")
+
+
+def summarize_observation_for_history(text: str, limit: int = 1800) -> str:
+    return truncate_text(text.replace("\n", " "), limit)
+
+
+def emit_sql_observation(observation: str, tracker: RunTracker) -> None:
+    parsed = safe_json_loads(observation)
+    if isinstance(parsed, dict):
+        statement_type = str(parsed.get("statement_type", "OTHER"))
+        ok = bool(parsed.get("ok"))
+        raw_result = parsed.get("result")
+        result_payload: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
+        if ok and result_payload.get("type") == "query":
+            rows = result_payload.get("row_count")
+            tracker.emit("OBSERVATION", f"sql_exec {statement_type} ok rows={rows}")
+            return
+        if ok:
+            affected = result_payload.get("affected_rows")
+            tracker.emit("OBSERVATION", f"sql_exec {statement_type} ok affected_rows={affected}")
+            return
+        error_text = str(parsed.get("error") or observation)
+        tracker.emit("OBSERVATION", f"sql_exec {statement_type} error={truncate_text(error_text, 360)}")
+        return
+
+    tracker.emit("OBSERVATION", f"sql_exec raw={truncate_text(observation, 360)}")
+
+
+async def run_subscription_agent_loop(
+    *,
+    settings: Settings,
+    tracker: RunTracker,
+    tool_runtime: ToolRuntime,
+    goal: str,
+    source_url: str,
+) -> None:
+    history: list[dict[str, Any]] = []
+    tracker.emit("THINK", "Subscription backend session started.")
+
+    for step_no in range(1, settings.max_tool_iterations + 1):
+        prompt = build_subscription_step_prompt(
+            goal=goal,
+            source_url=source_url,
+            history=history,
+            database_name=settings.database_name,
+        )
+
+        raw_output = await request_subscription_decision(settings, prompt)
+        parsed = extract_first_json_object(raw_output)
+        tracker.append_raw_event(
+            step_no,
+            "subscription_decision",
+            {
+                "provider": settings.model_provider,
+                "raw_output": summarize_observation_for_history(raw_output, 3000),
+                "parsed": parsed,
+            },
+        )
+
+        if not isinstance(parsed, dict):
+            observation = (
+                "Model output is not valid JSON; expected a single JSON object with tool_call/final_answer."
+            )
+            tracker.emit("OBSERVATION", observation)
+            history.append({
+                "step": step_no,
+                "error": observation,
+                "raw_output": summarize_observation_for_history(raw_output),
+            })
+            continue
+
+        thought = str(parsed.get("thought", "")).strip()
+        if thought:
+            tracker.emit("THINK", truncate_text(thought, 1200))
+
+        final_answer = parsed.get("final_answer")
+        if isinstance(final_answer, str) and final_answer.strip():
+            tracker.final_answer = final_answer.strip()
+            tracker.emit("FINAL", truncate_text(tracker.final_answer, 2000))
+            return
+
+        tool_call = parsed.get("tool_call")
+        if not isinstance(tool_call, dict):
+            observation = "Missing tool_call and no final_answer provided."
+            tracker.emit("OBSERVATION", observation)
+            history.append({"step": step_no, "error": observation})
+            continue
+
+        tool_name = str(tool_call.get("name", "")).strip()
+        raw_args = tool_call.get("args")
+        tool_args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+        observation_text: str
+
+        if tool_name == "http_fetch":
+            url = str(tool_args.get("url") or source_url)
+            tracker.emit("ACTION", f"http_fetch args={{\"url\": \"{truncate_text(url, 220)}\"}}")
+            observation_text = await tool_runtime.http_fetch(url)
+            tracker.emit("OBSERVATION", f"http_fetch ok: {truncate_text(observation_text, 360)}")
+
+        elif tool_name == "schema_inspect":
+            tracker.emit("ACTION", "schema_inspect args={}")
+            observation_text = tool_runtime.schema_inspect()
+            tracker.emit("OBSERVATION", f"schema_inspect ok: {truncate_text(observation_text, 360)}")
+
+        elif tool_name == "sql_exec":
+            sql = str(tool_args.get("sql", "")).strip()
+            if not sql:
+                observation_text = json_dumps({"ok": False, "error": "Missing args.sql for sql_exec"})
+                tracker.emit("OBSERVATION", "sql_exec error=Missing args.sql")
+            else:
+                tracker.emit("SQL", f"[{classify_sql(sql)}] {truncate_text(sql, 1200)}")
+                observation_text = tool_runtime.sql_exec(sql)
+                emit_sql_observation(observation_text, tracker)
+
+        else:
+            observation_text = json_dumps(
+                {
+                    "ok": False,
+                    "error": (
+                        f"Unknown tool '{tool_name}'. "
+                        "Use one of: http_fetch, schema_inspect, sql_exec"
+                    ),
+                }
+            )
+            tracker.emit("OBSERVATION", truncate_text(observation_text, 320))
+
+        history.append(
+            {
+                "step": step_no,
+                "thought": thought,
+                "tool_call": {"name": tool_name, "args": tool_args},
+                "observation": summarize_observation_for_history(observation_text),
+            }
+        )
+
+    if not tracker.final_answer:
+        tracker.final_answer = (
+            "Agent reached max tool iterations before producing a final answer. "
+            "Increase MAX_TOOL_ITERATIONS and retry."
+        )
+        tracker.emit("FINAL", tracker.final_answer)
+
+
 def normalize_openai_model_name(model_name: str) -> str:
     trimmed = model_name.strip()
     if trimmed.lower().startswith("openai/"):
@@ -386,6 +777,11 @@ def create_model_client(settings: Settings) -> Any:
     timeout_sec = float(settings.model_timeout_sec)
 
     if provider in {"openai", "openai_compatible", "gemini"}:
+        if not settings.model_api_key:
+            raise ValueError(
+                f"MODEL_API_KEY is required for provider '{provider}'. "
+                "Use codex_subscription/claude_subscription for subscription login modes."
+            )
         from autogen_ext.models.openai import OpenAIChatCompletionClient
 
         resolved_model_name = normalize_openai_model_name(settings.model_name)
@@ -407,6 +803,11 @@ def create_model_client(settings: Settings) -> Any:
         return OpenAIChatCompletionClient(**kwargs)
 
     if provider == "anthropic":
+        if not settings.model_api_key:
+            raise ValueError(
+                "MODEL_API_KEY (or ANTHROPIC_API_KEY) is required for provider 'anthropic'. "
+                "Use claude_subscription if you want CLI subscription login mode."
+            )
         from autogen_ext.models.anthropic import AnthropicChatCompletionClient
 
         kwargs = {
@@ -560,9 +961,11 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
     artifacts = make_run_artifacts(settings.runs_dir, run_id)
     tracker = RunTracker(artifacts=artifacts)
 
+    if is_subscription_provider(settings.model_provider):
+        ensure_subscription_cli_available(settings)
+
     tracker.emit("TIDB_ZERO", "Provisioning TiDB Zero ephemeral instance...")
     instance = provision_zero_instance(
-        invitation_code=settings.tidb_zero_invitation_code,
         tag=settings.tidb_zero_tag,
         timeout_sec=settings.http_timeout_sec,
     )
@@ -620,56 +1023,66 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             http_timeout_sec=settings.http_timeout_sec,
         )
 
-        model_client = create_model_client(settings)
+        if is_subscription_provider(settings.model_provider):
+            await run_subscription_agent_loop(
+                settings=settings,
+                tracker=tracker,
+                tool_runtime=tool_runtime,
+                goal=goal,
+                source_url=source_url,
+            )
+        else:
+            active_model_client = create_model_client(settings)
+            model_client = active_model_client
 
-        agent = AssistantAgent(
-            name="autonomous_data_agent",
-            model_client=model_client,
-            tools=[
-                tool_runtime.log_thought,
-                tool_runtime.http_fetch,
-                tool_runtime.schema_inspect,
-                tool_runtime.sql_exec,
-            ],
-            system_message=build_system_message(settings.database_name),
-            reflect_on_tool_use=True,
-            max_tool_iterations=settings.max_tool_iterations,
-            model_client_stream=True,
-        )
+            agent = AssistantAgent(
+                name="autonomous_data_agent",
+                model_client=active_model_client,
+                tools=[
+                    tool_runtime.log_thought,
+                    tool_runtime.http_fetch,
+                    tool_runtime.schema_inspect,
+                    tool_runtime.sql_exec,
+                ],
+                system_message=build_system_message(settings.database_name),
+                reflect_on_tool_use=True,
+                max_tool_iterations=settings.max_tool_iterations,
+                model_client_stream=True,
+            )
 
-        task = build_task(goal, source_url)
-        tracker.emit("THINK", "Agent session started.")
+            task = build_task(goal, source_url)
+            tracker.emit("THINK", "Agent session started.")
 
-        step_no = 0
-        async for event in agent.run_stream(task=task):
-            step_no += 1
-            event_type = type(event).__name__
-            payload = summarize_event(event)
-            tracker.append_raw_event(step_no, event_type, payload)
+            step_no = 0
+            async for event in agent.run_stream(task=task):
+                step_no += 1
+                event_type = type(event).__name__
+                payload = summarize_event(event)
+                tracker.append_raw_event(step_no, event_type, payload)
 
-            try:
-                payload_text = json_dumps(payload)
-                if len(payload_text) > 64000:
-                    payload_text = payload_text[:63980] + "...[truncated]"
-                sandbox.log_step(run_id, step_no, event_type, payload_text)
-            except Exception as log_exc:  # noqa: BLE001
-                if not step_log_failed:
-                    step_log_failed = True
-                    tracker.emit(
-                        "OBSERVATION",
-                        (
-                            "step log persistence failed; continuing run with local event file only. "
-                            f"reason={truncate_text(str(log_exc), 240)}"
-                        ),
-                    )
+                try:
+                    payload_text = json_dumps(payload)
+                    if len(payload_text) > 64000:
+                        payload_text = payload_text[:63980] + "...[truncated]"
+                    sandbox.log_step(run_id, step_no, event_type, payload_text)
+                except Exception as log_exc:  # noqa: BLE001
+                    if not step_log_failed:
+                        step_log_failed = True
+                        tracker.emit(
+                            "OBSERVATION",
+                            (
+                                "step log persistence failed; continuing run with local event file only. "
+                                f"reason={truncate_text(str(log_exc), 240)}"
+                            ),
+                        )
 
-            render_stream_event(event, tracker)
+                render_stream_event(event, tracker)
 
-        if not tracker.final_answer:
-            fallback = tracker.last_assistant_text.replace("TERMINATE", "").strip()
-            tracker.final_answer = fallback
-            if fallback:
-                tracker.emit("FINAL", truncate_text(fallback, 2000))
+            if not tracker.final_answer:
+                fallback = tracker.last_assistant_text.replace("TERMINATE", "").strip()
+                tracker.final_answer = fallback
+                if fallback:
+                    tracker.emit("FINAL", truncate_text(fallback, 2000))
 
         proof_tables = sorted(tracker.created_tables)
         tracker.emit(
