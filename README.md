@@ -7,24 +7,20 @@
 
 ### 1. Install
 
-We recommend [uv](https://github.com/astral-sh/uv) for instant setup:
-
 ```bash
-# Clone & Sync
 git clone https://github.com/lilyjazz/agent-tidb-mvp-demo.git
 cd agent-tidb-mvp-demo
-uv sync
+python3 -m venv .venv
+.venv/bin/pip install -e .
 ```
-
-*(Or use standard pip: `python -m venv .venv && source .venv/bin/activate && pip install -e .`)*
 
 ### 2. Configure (Choose One)
 
-**Option A: I have a GitHub Copilot / Claude subscription (No API Key needed!)**
+**Option A: I have a Codex / Claude subscription (No API Key needed!)**
 If you have the `codex` or `claude` CLI installed and logged in:
 ```bash
 # No .env needed! Just run:
-uv run zero-agent-demo run --provider codex_subscription
+.venv/bin/zero-agent-demo run --provider codex_subscription
 ```
 
 **Option B: I have an API Key (OpenAI / Anthropic / Gemini)**
@@ -37,7 +33,7 @@ cp .env.example .env
 
 **One-Liner (Earthquake Analysis):**
 ```bash
-uv run zero-agent-demo run \
+.venv/bin/zero-agent-demo run \
   "Find where magnitude >= 4 earthquakes happened today and summarize clusters." \
   --source-url "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
 ```
@@ -50,21 +46,21 @@ Try these live data sources. The agent handles the schema automatically.
 
 **Weather Analysis (Tokyo):**
 ```bash
-uv run zero-agent-demo run \
+.venv/bin/zero-agent-demo run \
   "Analyze Tokyo's next 48h temp trend. Highlight the biggest drop." \
   --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
 ```
 
 **Startup Trends (TechCrunch):**
 ```bash
-uv run zero-agent-demo run \
+.venv/bin/zero-agent-demo run \
   "Summarize top 5 startup trends from today's feed." \
   --source-url "https://techcrunch.com/feed/"
 ```
 
 **Developer Topics (Lobsters):**
 ```bash
-uv run zero-agent-demo run \
+.venv/bin/zero-agent-demo run \
   "What are the dominant engineering topics right now?" \
   --source-url "https://lobste.rs/hottest.json"
 ```
@@ -86,13 +82,13 @@ Every run is recorded in `.runs/`.
 
 ```bash
 # Replay the thought process
-uv run zero-agent-demo replay <run_id>
+.venv/bin/zero-agent-demo replay <run_id>
 
 # See exactly what SQL was executed
-uv run zero-agent-demo audit <run_id>
+.venv/bin/zero-agent-demo audit <run_id>
 
 # Get database connection string (to connect manually)
-uv run zero-agent-demo conn <run_id>
+.venv/bin/zero-agent-demo conn <run_id>
 ```
 
 ---
