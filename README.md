@@ -20,17 +20,17 @@ uv sync
 
 ### 2. Configure (Choose One)
 
-**Option A: I have an API Key (OpenAI / Anthropic / Gemini)**
-```bash
-cp .env.example .env
-# Edit .env and set MODEL_API_KEY=sk-...
-```
-
-**Option B: I have a GitHub Copilot / Claude subscription (No API Key needed!)**
+**Option A: I have a GitHub Copilot / Claude subscription (No API Key needed!)**
 If you have the `codex` or `claude` CLI installed and logged in:
 ```bash
 # No .env needed! Just run:
 uv run zero-agent-demo run --provider codex_subscription
+```
+
+**Option B: I have an API Key (OpenAI / Anthropic / Gemini)**
+```bash
+cp .env.example .env
+# Edit .env and set MODEL_API_KEY=sk-...
 ```
 
 ### 3. Run
