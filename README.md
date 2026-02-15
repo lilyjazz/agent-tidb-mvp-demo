@@ -55,8 +55,6 @@ Fill `.env` with at least:
 - `MODEL_PROVIDER`
 - `MODEL_NAME`
 
-TiDB Zero invitation code is no longer required.
-
 For this demo, **prefer one-time local login first** (subscription mode, no API key in project env):
 
 ```env
