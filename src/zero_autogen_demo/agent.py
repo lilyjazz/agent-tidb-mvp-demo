@@ -301,6 +301,9 @@ def build_system_message(database_name: str) -> str:
         "You are an autonomous data agent operating inside a dedicated TiDB Zero database. "
         f"Your active schema is `{database_name}`. "
         "You have full SQL privileges in this schema. "
+        "CRITICAL: Data fetched via http_fetch is NOT automatically stored in the database. "
+        "You MUST explicitly `CREATE TABLE` and `INSERT` the fetched data before you can query it with SQL. "
+        "Do not look for data in system tables like `run_logs` or `step_logs`. "
         "Do not assume predefined business tables. Design your own schema based on observed data. "
         "Use tools to fetch data, inspect schema, and execute SQL. "
         "Before each meaningful action, call log_thought with a concise 1-2 sentence rationale. "
@@ -396,6 +399,9 @@ def build_subscription_step_prompt(
         "- `sql_exec` must contain exactly one SQL statement in args.sql.\n"
         "- If task is complete, set final_answer and tool_call=null.\n"
         "- Do not include any keys outside the required schema.\n\n"
+        "CRITICAL: Data fetched via http_fetch is NOT automatically stored in the database.\n"
+        "You MUST explicitly `CREATE TABLE` and `INSERT` the fetched data before you can query it with SQL.\n"
+        "Do NOT look for data in system tables like `run_logs` or `step_logs`.\n\n"
         f"Task goal: {goal}\n"
         f"Public source URL: {source_url}\n"
         f"Active database schema: {database_name}\n"
@@ -481,14 +487,18 @@ def run_codex_subscription_prompt(settings: Settings, prompt: str) -> str:
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
-        "--model",
-        settings.model_name,
         "--output-schema",
         str(schema_path),
         "--output-last-message",
         str(output_path),
-        prompt,
     ]
+
+    # Only add --model if it is not "default" or empty
+    # Codex CLI with ChatGPT login often fails if --model is specified explicitly
+    if settings.model_name and settings.model_name.lower() != "default":
+        cmd.extend(["--model", settings.model_name])
+
+    cmd.append(prompt)
 
     try:
         completed = subprocess.run(
