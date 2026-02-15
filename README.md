@@ -48,18 +48,18 @@ uv run zero-agent-demo run \
 
 Try these live data sources. The agent handles the schema automatically.
 
-**Startup Trends (TechCrunch):**
-```bash
-uv run zero-agent-demo run \
-  "Summarize top 5 startup trends from today's feed." \
-  --source-url "https://techcrunch.com/feed/"
-```
-
 **Weather Analysis (Tokyo):**
 ```bash
 uv run zero-agent-demo run \
   "Analyze Tokyo's next 48h temp trend. Highlight the biggest drop." \
   --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
+```
+
+**Startup Trends (TechCrunch):**
+```bash
+uv run zero-agent-demo run \
+  "Summarize top 5 startup trends from today's feed." \
+  --source-url "https://techcrunch.com/feed/"
 ```
 
 **Developer Topics (Lobsters):**
