@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
@@ -122,6 +123,8 @@ class RunArtifacts:
     timeline_path: Path
     events_path: Path
     sql_audit_path: Path
+    step_perf_path: Path
+    perf_path: Path
     instance_path: Path
     final_path: Path
     error_trace_path: Path
@@ -135,6 +138,8 @@ class RunTracker:
     created_tables: set[str] = field(default_factory=set)
     final_answer: str = ""
     last_assistant_text: str = ""
+    step_count: int = 0
+    model_decision_ms: int = 0
 
     def emit(self, kind: str, message: str) -> None:
         line = f"[{kind}] {message}"
@@ -161,6 +166,9 @@ class RunTracker:
 
     def append_sql_audit(self, record: dict[str, Any]) -> None:
         self._append_jsonl(self.artifacts.sql_audit_path, record)
+
+    def append_step_perf(self, record: dict[str, Any]) -> None:
+        self._append_jsonl(self.artifacts.step_perf_path, record)
 
     def record_sql(self, statement_type: str, sql: str, *, is_error: bool) -> None:
         self.sql_count += 1
@@ -194,106 +202,133 @@ class ToolRuntime:
         self.sql_row_limit = sql_row_limit
         self.fetch_max_chars = fetch_max_chars
         self.http_timeout_sec = http_timeout_sec
+        self.total_tool_exec_ms = 0
+        self.total_db_exec_ms = 0
+
+    def _record_tool_elapsed(self, started_at: float) -> None:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        self.total_tool_exec_ms += max(elapsed_ms, 0)
 
     async def http_fetch(self, url: str) -> str:
         """Fetch a public HTTP/HTTPS URL with GET and return status, headers, and body text."""
-        async with httpx.AsyncClient(timeout=self.http_timeout_sec, follow_redirects=True) as client:
-            response = await client.get(url)
+        started_at = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.http_timeout_sec, follow_redirects=True) as client:
+                response = await client.get(url)
 
-        body = response.text
-        if len(body) > self.fetch_max_chars:
-            body = body[: self.fetch_max_chars] + "\n...[TRUNCATED]"
+            body = response.text
+            if len(body) > self.fetch_max_chars:
+                body = body[: self.fetch_max_chars] + "\n...[TRUNCATED]"
 
-        payload = {
-            "url": str(response.url),
-            "status_code": response.status_code,
-            "content_type": response.headers.get("content-type"),
-            "body": body,
-        }
-        return json_dumps(payload)
+            payload = {
+                "url": str(response.url),
+                "status_code": response.status_code,
+                "content_type": response.headers.get("content-type"),
+                "body": body,
+            }
+            return json_dumps(payload)
+        finally:
+            self._record_tool_elapsed(started_at)
 
     def log_thought(self, thought: str) -> str:
         """Record a concise thought summary before taking an action."""
+        started_at = time.perf_counter()
         cleaned = thought.strip()
         if not cleaned:
+            self._record_tool_elapsed(started_at)
             return json_dumps({"ok": False, "error": "thought cannot be empty"})
-        return json_dumps({"ok": True, "thought": truncate_text(cleaned, 800)})
+        payload = json_dumps({"ok": True, "thought": truncate_text(cleaned, 800)})
+        self._record_tool_elapsed(started_at)
+        return payload
 
     def schema_inspect(self) -> str:
         """Inspect current database schema and return tables/columns metadata as JSON."""
-        sql = """
-        SELECT
-          table_name,
-          column_name,
-          data_type,
-          column_type,
-          is_nullable,
-          column_key
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE()
-        ORDER BY table_name, ordinal_position
-        """
-        result, _elapsed = self.sandbox.execute_sql(sql, max_rows=2000)
-        return json_dumps(result)
+        started_at = time.perf_counter()
+        try:
+            sql = """
+            SELECT
+              table_name,
+              column_name,
+              data_type,
+              column_type,
+              is_nullable,
+              column_key
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+            ORDER BY table_name, ordinal_position
+            """
+            result, elapsed_ms = self.sandbox.execute_sql(sql, max_rows=2000)
+            self.total_db_exec_ms += max(elapsed_ms, 0)
+            return json_dumps(result)
+        finally:
+            self._record_tool_elapsed(started_at)
 
     def sql_exec(self, sql: str) -> str:
         """Execute exactly one SQL statement against TiDB Zero and return JSON result."""
-        normalized_sql = normalize_sql(sql)
-        statement_type = classify_sql(normalized_sql)
-        elapsed_ms = 0
-        result_rows: int | None = None
-        error_text: str | None = None
-
+        started_at = time.perf_counter()
         try:
-            result, elapsed_ms = self.sandbox.execute_sql(normalized_sql, max_rows=self.sql_row_limit)
-            if result.get("type") == "query":
-                result_rows = int(result.get("row_count", 0))
-            else:
-                affected = result.get("affected_rows")
-                result_rows = int(affected) if isinstance(affected, int) else None
-            ok = True
-        except Exception as exc:  # noqa: BLE001
-            result = {
-                "type": "error",
-                "error": str(exc),
+            normalized_sql = normalize_sql(sql)
+            statement_type = classify_sql(normalized_sql)
+            elapsed_ms = 0
+            result_rows: int | None = None
+            error_text: str | None = None
+            db_started_at = time.perf_counter()
+
+            try:
+                result, elapsed_ms = self.sandbox.execute_sql(normalized_sql, max_rows=self.sql_row_limit)
+                if result.get("type") == "query":
+                    result_rows = int(result.get("row_count", 0))
+                else:
+                    affected = result.get("affected_rows")
+                    result_rows = int(affected) if isinstance(affected, int) else None
+                ok = True
+            except Exception as exc:  # noqa: BLE001
+                elapsed_ms = int((time.perf_counter() - db_started_at) * 1000)
+                result = {
+                    "type": "error",
+                    "error": str(exc),
+                }
+                error_text = str(exc)
+                ok = False
+
+            self.total_db_exec_ms += max(elapsed_ms, 0)
+
+            try:
+                self.sandbox.log_sql_audit(
+                    run_id=self.run_id,
+                    statement_type=statement_type,
+                    sql_text=normalized_sql,
+                    is_error=not ok,
+                    result_rows=result_rows,
+                    elapsed_ms=elapsed_ms,
+                    error_text=error_text,
+                )
+            except Exception as log_exc:  # noqa: BLE001
+                suffix = f"sql_audit_log_error: {log_exc}"
+                error_text = f"{error_text} | {suffix}" if error_text else suffix
+
+            audit_record = {
+                "ts": utc_now_iso(),
+                "statement_type": statement_type,
+                "sql_text": normalized_sql,
+                "is_error": not ok,
+                "result_rows": result_rows,
+                "elapsed_ms": elapsed_ms,
+                "error_text": error_text,
             }
-            error_text = str(exc)
-            ok = False
+            self.tracker.append_sql_audit(audit_record)
+            self.tracker.record_sql(statement_type, normalized_sql, is_error=not ok)
 
-        try:
-            self.sandbox.log_sql_audit(
-                run_id=self.run_id,
-                statement_type=statement_type,
-                sql_text=normalized_sql,
-                is_error=not ok,
-                result_rows=result_rows,
-                elapsed_ms=elapsed_ms,
-                error_text=error_text,
-            )
-        except Exception as log_exc:  # noqa: BLE001
-            suffix = f"sql_audit_log_error: {log_exc}"
-            error_text = f"{error_text} | {suffix}" if error_text else suffix
-
-        audit_record = {
-            "ts": utc_now_iso(),
-            "statement_type": statement_type,
-            "sql_text": normalized_sql,
-            "is_error": not ok,
-            "result_rows": result_rows,
-            "elapsed_ms": elapsed_ms,
-            "error_text": error_text,
-        }
-        self.tracker.append_sql_audit(audit_record)
-        self.tracker.record_sql(statement_type, normalized_sql, is_error=not ok)
-
-        response = {
-            "ok": ok,
-            "statement_type": statement_type,
-            "elapsed_ms": elapsed_ms,
-            "result": result,
-            "error": error_text,
-        }
-        return json_dumps(response)
+            response = {
+                "ok": ok,
+                "statement_type": statement_type,
+                "elapsed_ms": elapsed_ms,
+                "result": result,
+                "error": error_text,
+            }
+            return json_dumps(response)
+        finally:
+            self._record_tool_elapsed(started_at)
 
 
 def build_system_message(database_name: str) -> str:
@@ -630,6 +665,7 @@ async def run_subscription_agent_loop(
     tracker.emit("THINK", "Subscription backend session started.")
 
     for step_no in range(1, settings.max_tool_iterations + 1):
+        tracker.step_count = step_no
         prompt = build_subscription_step_prompt(
             goal=goal,
             source_url=source_url,
@@ -637,7 +673,10 @@ async def run_subscription_agent_loop(
             database_name=settings.database_name,
         )
 
+        decision_started_at = time.perf_counter()
         raw_output = await request_subscription_decision(settings, prompt)
+        decision_ms = int((time.perf_counter() - decision_started_at) * 1000)
+        tracker.model_decision_ms += decision_ms
         parsed = extract_first_json_object(raw_output)
         tracker.append_raw_event(
             step_no,
@@ -659,6 +698,18 @@ async def run_subscription_agent_loop(
                 "error": observation,
                 "raw_output": summarize_observation_for_history(raw_output),
             })
+            tracker.append_step_perf(
+                {
+                    "ts": utc_now_iso(),
+                    "step_no": step_no,
+                    "status": "invalid_json",
+                    "decision_ms": decision_ms,
+                    "tool_name": None,
+                    "tool_exec_ms": 0,
+                    "db_exec_ms": 0,
+                    "total_ms": decision_ms,
+                }
+            )
             continue
 
         thought = str(parsed.get("thought", "")).strip()
@@ -669,6 +720,18 @@ async def run_subscription_agent_loop(
         if isinstance(final_answer, str) and final_answer.strip():
             tracker.final_answer = final_answer.strip()
             tracker.emit("FINAL", truncate_text(tracker.final_answer, 2000))
+            tracker.append_step_perf(
+                {
+                    "ts": utc_now_iso(),
+                    "step_no": step_no,
+                    "status": "final",
+                    "decision_ms": decision_ms,
+                    "tool_name": None,
+                    "tool_exec_ms": 0,
+                    "db_exec_ms": 0,
+                    "total_ms": decision_ms,
+                }
+            )
             return
 
         tool_call = parsed.get("tool_call")
@@ -676,45 +739,84 @@ async def run_subscription_agent_loop(
             observation = "Missing tool_call and no final_answer provided."
             tracker.emit("OBSERVATION", observation)
             history.append({"step": step_no, "error": observation})
+            tracker.append_step_perf(
+                {
+                    "ts": utc_now_iso(),
+                    "step_no": step_no,
+                    "status": "missing_tool_call",
+                    "decision_ms": decision_ms,
+                    "tool_name": None,
+                    "tool_exec_ms": 0,
+                    "db_exec_ms": 0,
+                    "total_ms": decision_ms,
+                }
+            )
             continue
 
         tool_name = str(tool_call.get("name", "")).strip()
         raw_args = tool_call.get("args")
         tool_args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
-        observation_text: str
+        observation_text = ""
+        tool_error_text: str | None = None
+        before_tool_exec_ms = tool_runtime.total_tool_exec_ms
+        before_db_exec_ms = tool_runtime.total_db_exec_ms
 
-        if tool_name == "http_fetch":
-            url = str(tool_args.get("url") or source_url)
-            tracker.emit("ACTION", f"http_fetch args={{\"url\": \"{truncate_text(url, 220)}\"}}")
-            observation_text = await tool_runtime.http_fetch(url)
-            tracker.emit("OBSERVATION", f"http_fetch ok: {truncate_text(observation_text, 360)}")
+        try:
+            if tool_name == "http_fetch":
+                url = str(tool_args.get("url") or source_url)
+                tracker.emit("ACTION", f"http_fetch args={{\"url\": \"{truncate_text(url, 220)}\"}}")
+                observation_text = await tool_runtime.http_fetch(url)
+                tracker.emit("OBSERVATION", f"http_fetch ok: {truncate_text(observation_text, 360)}")
 
-        elif tool_name == "schema_inspect":
-            tracker.emit("ACTION", "schema_inspect args={}")
-            observation_text = tool_runtime.schema_inspect()
-            tracker.emit("OBSERVATION", f"schema_inspect ok: {truncate_text(observation_text, 360)}")
+            elif tool_name == "schema_inspect":
+                tracker.emit("ACTION", "schema_inspect args={}")
+                observation_text = tool_runtime.schema_inspect()
+                tracker.emit("OBSERVATION", f"schema_inspect ok: {truncate_text(observation_text, 360)}")
 
-        elif tool_name == "sql_exec":
-            sql = str(tool_args.get("sql", "")).strip()
-            if not sql:
-                observation_text = json_dumps({"ok": False, "error": "Missing args.sql for sql_exec"})
-                tracker.emit("OBSERVATION", "sql_exec error=Missing args.sql")
+            elif tool_name == "sql_exec":
+                sql = str(tool_args.get("sql", "")).strip()
+                if not sql:
+                    observation_text = json_dumps({"ok": False, "error": "Missing args.sql for sql_exec"})
+                    tracker.emit("OBSERVATION", "sql_exec error=Missing args.sql")
+                else:
+                    tracker.emit("SQL", f"[{classify_sql(sql)}] {truncate_text(sql, 1200)}")
+                    observation_text = tool_runtime.sql_exec(sql)
+                    emit_sql_observation(observation_text, tracker)
+
             else:
-                tracker.emit("SQL", f"[{classify_sql(sql)}] {truncate_text(sql, 1200)}")
-                observation_text = tool_runtime.sql_exec(sql)
-                emit_sql_observation(observation_text, tracker)
-
-        else:
-            observation_text = json_dumps(
-                {
-                    "ok": False,
-                    "error": (
-                        f"Unknown tool '{tool_name}'. "
-                        "Use one of: http_fetch, schema_inspect, sql_exec"
-                    ),
-                }
-            )
-            tracker.emit("OBSERVATION", truncate_text(observation_text, 320))
+                observation_text = json_dumps(
+                    {
+                        "ok": False,
+                        "error": (
+                            f"Unknown tool '{tool_name}'. "
+                            "Use one of: http_fetch, schema_inspect, sql_exec"
+                        ),
+                    }
+                )
+                tracker.emit("OBSERVATION", truncate_text(observation_text, 320))
+        except Exception as exc:  # noqa: BLE001
+            tool_error_text = str(exc)
+            raise
+        finally:
+            step_tool_exec_ms = max(tool_runtime.total_tool_exec_ms - before_tool_exec_ms, 0)
+            step_db_exec_ms = max(tool_runtime.total_db_exec_ms - before_db_exec_ms, 0)
+            step_payload: dict[str, Any] = {
+                "ts": utc_now_iso(),
+                "step_no": step_no,
+                "status": "tool_exception" if tool_error_text else "tool_called",
+                "decision_ms": decision_ms,
+                "tool_name": tool_name,
+                "tool_exec_ms": step_tool_exec_ms,
+                "db_exec_ms": step_db_exec_ms,
+                "total_ms": decision_ms + step_tool_exec_ms,
+            }
+            if observation_text:
+                parsed_observation = safe_json_loads(observation_text)
+                if isinstance(parsed_observation, dict) and "ok" in parsed_observation:
+                    step_payload["tool_ok"] = bool(parsed_observation.get("ok"))
+            if tool_error_text:
+                step_payload["error"] = truncate_text(tool_error_text, 360)
+            tracker.append_step_perf(step_payload)
 
         history.append(
             {
@@ -842,6 +944,8 @@ def make_run_artifacts(root: Path, run_id: str) -> RunArtifacts:
         timeline_path=run_dir / "timeline.jsonl",
         events_path=run_dir / "events.jsonl",
         sql_audit_path=run_dir / "sql_audit.jsonl",
+        step_perf_path=run_dir / "step_perf.jsonl",
+        perf_path=run_dir / "perf.json",
         instance_path=run_dir / "tidb_zero_instance.json",
         final_path=run_dir / "final_answer.txt",
         error_trace_path=run_dir / "error_traceback.txt",
@@ -967,6 +1071,8 @@ class RunResult:
 
 
 async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) -> RunResult:
+    run_started_at = time.perf_counter()
+    zero_provision_ms = 0
     run_id = str(uuid.uuid4())
     artifacts = make_run_artifacts(settings.runs_dir, run_id)
     tracker = RunTracker(artifacts=artifacts)
@@ -975,10 +1081,12 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
         ensure_subscription_cli_available(settings)
 
     tracker.emit("TIDB_ZERO", "Provisioning TiDB Zero ephemeral instance...")
+    zero_started_at = time.perf_counter()
     instance = provision_zero_instance(
         tag=settings.tidb_zero_tag,
         timeout_sec=settings.http_timeout_sec,
     )
+    zero_provision_ms = int((time.perf_counter() - zero_started_at) * 1000)
     save_instance_credentials(artifacts, instance)
 
     tracker.emit(
@@ -1002,6 +1110,7 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
 
     sandbox = TiDBSandbox(instance=instance, database_name=settings.database_name)
     model_client: Any | None = None
+    tool_runtime: ToolRuntime | None = None
     step_log_failed = False
 
     try:
@@ -1066,6 +1175,7 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             step_no = 0
             async for event in agent.run_stream(task=task):
                 step_no += 1
+                tracker.step_count = step_no
                 event_type = type(event).__name__
                 payload = summarize_event(event)
                 tracker.append_raw_event(step_no, event_type, payload)
@@ -1105,6 +1215,37 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
 
         final_answer = tracker.final_answer or "Agent finished without a final text answer."
         artifacts.final_path.write_text(final_answer, encoding="utf-8")
+
+        run_total_ms = int((time.perf_counter() - run_started_at) * 1000)
+        total_tool_exec_ms = tool_runtime.total_tool_exec_ms if tool_runtime is not None else 0
+        total_db_exec_ms = tool_runtime.total_db_exec_ms if tool_runtime is not None else 0
+        model_decision_ms = tracker.model_decision_ms
+        if model_decision_ms <= 0 and not is_subscription_provider(settings.model_provider):
+            derived_model_ms = run_total_ms - zero_provision_ms - total_tool_exec_ms
+            model_decision_ms = max(derived_model_ms, 0)
+        perf_payload = {
+            "run_id": run_id,
+            "status": "completed",
+            "provider": settings.model_provider,
+            "model": settings.model_name,
+            "run_total_ms": run_total_ms,
+            "zero_provision_ms": zero_provision_ms,
+            "model_decision_ms": model_decision_ms,
+            "tool_exec_ms": total_tool_exec_ms,
+            "db_exec_ms": total_db_exec_ms,
+            "step_count": tracker.step_count,
+            "sql_count": tracker.sql_count,
+            "ddl_count": tracker.ddl_count,
+        }
+        artifacts.perf_path.write_text(json.dumps(perf_payload, indent=2), encoding="utf-8")
+        tracker.emit(
+            "PERF",
+            (
+                f"run_total_ms={run_total_ms} zero_provision_ms={zero_provision_ms} "
+                f"model_decision_ms={model_decision_ms} tool_exec_ms={total_tool_exec_ms} "
+                f"db_exec_ms={total_db_exec_ms} step_count={tracker.step_count}"
+            ),
+        )
         try:
             sandbox.log_run_end(run_id, final_answer, status="completed")
         except Exception as log_exc:  # noqa: BLE001
@@ -1132,6 +1273,38 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
         trace_text = traceback.format_exc()
         artifacts.error_trace_path.write_text(trace_text, encoding="utf-8")
         tracker.emit("ERROR", f"Traceback saved to {artifacts.error_trace_path}")
+
+        run_total_ms = int((time.perf_counter() - run_started_at) * 1000)
+        total_tool_exec_ms = tool_runtime.total_tool_exec_ms if tool_runtime is not None else 0
+        total_db_exec_ms = tool_runtime.total_db_exec_ms if tool_runtime is not None else 0
+        model_decision_ms = tracker.model_decision_ms
+        if model_decision_ms <= 0 and not is_subscription_provider(settings.model_provider):
+            derived_model_ms = run_total_ms - zero_provision_ms - total_tool_exec_ms
+            model_decision_ms = max(derived_model_ms, 0)
+        perf_payload = {
+            "run_id": run_id,
+            "status": "failed",
+            "provider": settings.model_provider,
+            "model": settings.model_name,
+            "run_total_ms": run_total_ms,
+            "zero_provision_ms": zero_provision_ms,
+            "model_decision_ms": model_decision_ms,
+            "tool_exec_ms": total_tool_exec_ms,
+            "db_exec_ms": total_db_exec_ms,
+            "step_count": tracker.step_count,
+            "sql_count": tracker.sql_count,
+            "ddl_count": tracker.ddl_count,
+            "error": str(exc),
+        }
+        artifacts.perf_path.write_text(json.dumps(perf_payload, indent=2), encoding="utf-8")
+        tracker.emit(
+            "PERF",
+            (
+                f"run_total_ms={run_total_ms} zero_provision_ms={zero_provision_ms} "
+                f"model_decision_ms={model_decision_ms} tool_exec_ms={total_tool_exec_ms} "
+                f"db_exec_ms={total_db_exec_ms} step_count={tracker.step_count}"
+            ),
+        )
 
         if sandbox.is_connected:
             try:
@@ -1166,6 +1339,8 @@ def replay_run(runs_dir: Path, run_id: str) -> None:
 
 def audit_run(runs_dir: Path, run_id: str) -> None:
     sql_audit_path = runs_dir / run_id / "sql_audit.jsonl"
+    step_perf_path = runs_dir / run_id / "step_perf.jsonl"
+    perf_path = runs_dir / run_id / "perf.json"
     if not sql_audit_path.exists():
         raise FileNotFoundError(f"SQL audit file not found: {sql_audit_path}")
 
@@ -1207,6 +1382,55 @@ def audit_run(runs_dir: Path, run_id: str) -> None:
         f"sql_count={sql_count} ddl_count={ddl_count} error_count={error_count} "
         f"tables_created={len(created_tables)} {sorted(created_tables)}"
     )
+
+    run_total_ms: int | None = None
+    if perf_path.exists():
+        perf_raw = safe_json_loads(perf_path.read_text(encoding="utf-8"))
+        if isinstance(perf_raw, dict):
+            raw_total = perf_raw.get("run_total_ms")
+            run_total_ms = int(raw_total) if isinstance(raw_total, int) else None
+            print(
+                "[PERF] "
+                f"run_total_ms={perf_raw.get('run_total_ms')} "
+                f"zero_provision_ms={perf_raw.get('zero_provision_ms')} "
+                f"model_decision_ms={perf_raw.get('model_decision_ms')} "
+                f"tool_exec_ms={perf_raw.get('tool_exec_ms')} "
+                f"db_exec_ms={perf_raw.get('db_exec_ms')} "
+                f"step_count={perf_raw.get('step_count')}"
+            )
+
+    if step_perf_path.exists():
+        step_records: list[dict[str, Any]] = []
+        with step_perf_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                item = safe_json_loads(line)
+                if isinstance(item, dict):
+                    step_records.append(item)
+
+        if step_records:
+            print(f"[PERF_STEPS] count={len(step_records)} sorted_by=total_ms_desc")
+            sorted_steps = sorted(
+                step_records,
+                key=lambda item: int(item.get("total_ms", 0) or 0),
+                reverse=True,
+            )
+            for item in sorted_steps:
+                total_ms = int(item.get("total_ms", 0) or 0)
+                pct = ""
+                if run_total_ms and run_total_ms > 0:
+                    pct = f" pct_of_run={((total_ms / run_total_ms) * 100):.1f}%"
+                print(
+                    "[PERF_STEP] "
+                    f"step={item.get('step_no')} "
+                    f"status={item.get('status')} "
+                    f"tool={item.get('tool_name')} "
+                    f"decision_ms={item.get('decision_ms')} "
+                    f"tool_exec_ms={item.get('tool_exec_ms')} "
+                    f"db_exec_ms={item.get('db_exec_ms')} "
+                    f"total_ms={total_ms}{pct}"
+                )
 
 
 def show_tidb_zero_connection(runs_dir: Path, run_id: str, *, redact_password: bool = False) -> None:
