@@ -1,6 +1,22 @@
+# Environment
 .env
 .venv/
+
+# Python
 __pycache__/
 *.pyc
-.runs/
 *.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime Artifacts
+.runs/
+*tidb_zero_instance.json
+
+# IDE / Editor
+.vscode/
+.idea/
+.DS_Store
