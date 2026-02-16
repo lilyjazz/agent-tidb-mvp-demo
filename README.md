@@ -36,6 +36,19 @@ cp .env.example .env
   --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
 ```
 
+### 4. Support Status (Prioritize Tested Paths)
+
+The following is the current validation status in this repo:
+
+| Method | `MODEL_PROVIDER` | Auth | Status | Recommendation |
+| :--- | :--- | :--- | :--- | :--- |
+| OpenAI API | `openai` | API Key | ✅ Tested | Use first |
+| Codex Subscription | `codex_subscription` | Codex CLI login | ✅ Tested | Use first |
+| Claude Subscription | `claude_subscription` | Claude CLI login | ⚠️ Not fully tested | Use after tested paths |
+| Anthropic API | `anthropic` | API Key | ⚠️ Not fully tested | Use after tested paths |
+| Gemini API | `gemini` | API Key | ⚠️ Not fully tested | Use after tested paths |
+| OpenAI-compatible API | `openai_compatible` | API Key + Base URL | ⚠️ Not fully tested | Use after tested paths |
+
 ---
 
 ## 🍳 Cookbook
@@ -97,7 +110,7 @@ Full list of environment variables:
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `MODEL_PROVIDER` | `openai`, `anthropic`, `gemini`, `codex_subscription` | `openai` |
+| `MODEL_PROVIDER` | `openai`, `anthropic`, `gemini`, `openai_compatible`, `claude_subscription`, `codex_subscription` | `openai` |
 | `MODEL_API_KEY` | Required if using API providers | - |
 | `MODEL_NAME` | Specific model version (e.g. `gpt-4o`) | Provider default |
 | `TIDB_ZERO_TAG` | Tag for the ephemeral instance | `agent-demo` |
