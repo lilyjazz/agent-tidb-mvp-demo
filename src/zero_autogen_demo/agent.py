@@ -30,6 +30,7 @@ CREATE_TABLE_RE = re.compile(
 )
 
 SUBSCRIPTION_PROVIDERS = {"claude_subscription", "codex_subscription"}
+MAX_BATCH_TOOL_CALLS = 3
 
 
 def utc_now_iso() -> str:
@@ -418,24 +419,57 @@ def build_subscription_step_prompt(
     source_url: str,
     history: list[dict[str, Any]],
     database_name: str,
+    batch_tools_enabled: bool,
 ) -> str:
     history_window = history[-8:]
     history_json = json_dumps(history_window)
+
+    if batch_tools_enabled:
+        output_schema_hint = (
+            "Return exactly one JSON object with this schema and no markdown/code fences:\n"
+            '{"thought":"short rationale","tool_calls":[{"name":"http_fetch|schema_inspect|sql_exec","args":{}}],"final_answer":null}\n'
+            "or\n"
+            '{"thought":"short rationale","tool_call":{"name":"http_fetch|schema_inspect|sql_exec","args":{}},"final_answer":null}\n'
+            "or\n"
+            '{"thought":"short rationale","tool_call":null,"final_answer":"final answer with SQL evidence"}\n\n'
+        )
+        rules_hint = (
+            "Rules:\n"
+            "- Keep `thought` to one or two short sentences.\n"
+            f"- Prefer `tool_calls` for deterministic multi-step sequences (2-{MAX_BATCH_TOOL_CALLS} actions), executed in order.\n"
+            "- Use `tool_call` for one-off or uncertain actions.\n"
+            "- Decision policy: if source data is not fetched yet, do one `http_fetch`; once fetched, batch the remaining deterministic SQL steps.\n"
+            "- After any tool error in the most recent step, use single-action corrective `tool_call` first.\n"
+            "- Tool args contract: http_fetch -> {\"url\":\"...\"}; schema_inspect -> {}; sql_exec -> {\"sql\":\"...\"}.\n"
+            "- `sql_exec` must contain exactly one SQL statement in args.sql.\n"
+            "- For loading fetched data, prefer explicit `CREATE TABLE IF NOT EXISTS` + `INSERT` + `SELECT`; avoid `CREATE TABLE ... SELECT`.\n"
+            "- If task is complete, set final_answer and tool_call=null.\n"
+            "- Do not include any keys outside the required schema.\n\n"
+        )
+    else:
+        output_schema_hint = (
+            "Return exactly one JSON object with this schema and no markdown/code fences:\n"
+            '{"thought":"short rationale","tool_call":{"name":"http_fetch|schema_inspect|sql_exec","args":{}},"final_answer":null}\n'
+            "or\n"
+            '{"thought":"short rationale","tool_call":null,"final_answer":"final answer with SQL evidence"}\n\n'
+        )
+        rules_hint = (
+            "Rules:\n"
+            "- Keep `thought` to one or two short sentences.\n"
+            "- Use only one tool call per step.\n"
+            "- Tool args contract: http_fetch -> {\"url\":\"...\"}; schema_inspect -> {}; sql_exec -> {\"sql\":\"...\"}.\n"
+            "- `sql_exec` must contain exactly one SQL statement in args.sql.\n"
+            "- If task is complete, set final_answer and tool_call=null.\n"
+            "- Do not include any keys outside the required schema.\n\n"
+        )
+
     return (
         "You are controlling a tool-using data agent loop.\n"
-        "Return exactly one JSON object with this schema and no markdown/code fences:\n"
-        '{"thought":"short rationale","tool_call":{"name":"http_fetch|schema_inspect|sql_exec","args":{}},"final_answer":null}\n'
-        "or\n"
-        '{"thought":"short rationale","tool_call":null,"final_answer":"final answer with SQL evidence"}\n\n'
-        "Rules:\n"
-        "- Keep `thought` to one or two short sentences.\n"
-        "- Use only one tool call per step.\n"
-        "- Tool args contract: http_fetch -> {\"url\":\"...\"}; schema_inspect -> {}; sql_exec -> {\"sql\":\"...\"}.\n"
-        "- `sql_exec` must contain exactly one SQL statement in args.sql.\n"
-        "- If task is complete, set final_answer and tool_call=null.\n"
-        "- Do not include any keys outside the required schema.\n\n"
+        f"{output_schema_hint}"
+        f"{rules_hint}"
         "CRITICAL: Data fetched via http_fetch is NOT automatically stored in the database.\n"
         "You MUST explicitly `CREATE TABLE` and `INSERT` the fetched data before you can query it with SQL.\n"
+        "Avoid `CREATE TABLE ... SELECT`; use explicit `CREATE TABLE` then `INSERT`.\n"
         "Do NOT look for data in system tables like `run_logs` or `step_logs`.\n\n"
         f"Task goal: {goal}\n"
         f"Public source URL: {source_url}\n"
@@ -445,8 +479,62 @@ def build_subscription_step_prompt(
     )
 
 
-def subscription_decision_schema() -> dict[str, Any]:
+def subscription_tool_call_schema() -> dict[str, Any]:
     return {
+        "anyOf": [
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "args"],
+                "properties": {
+                    "name": {"type": "string", "const": "http_fetch"},
+                    "args": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["url"],
+                        "properties": {
+                            "url": {"type": "string"},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "args"],
+                "properties": {
+                    "name": {"type": "string", "const": "schema_inspect"},
+                    "args": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [],
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "args"],
+                "properties": {
+                    "name": {"type": "string", "const": "sql_exec"},
+                    "args": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["sql"],
+                        "properties": {
+                            "sql": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        ]
+    }
+
+
+def subscription_decision_schema(*, batch_tools_enabled: bool) -> dict[str, Any]:
+    tool_call_schema = subscription_tool_call_schema()
+    base_single = {
         "type": "object",
         "additionalProperties": False,
         "required": ["thought", "tool_call", "final_answer"],
@@ -455,51 +543,36 @@ def subscription_decision_schema() -> dict[str, Any]:
             "tool_call": {
                 "anyOf": [
                     {"type": "null"},
+                    tool_call_schema,
+                ]
+            },
+            "final_answer": {"type": ["string", "null"]},
+        },
+    }
+
+    if not batch_tools_enabled:
+        return base_single
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["thought", "final_answer"],
+        "properties": {
+            "thought": {"type": "string"},
+            "tool_call": {
+                "anyOf": [
+                    {"type": "null"},
+                    tool_call_schema,
+                ]
+            },
+            "tool_calls": {
+                "anyOf": [
+                    {"type": "null"},
                     {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["name", "args"],
-                        "properties": {
-                            "name": {"type": "string", "const": "http_fetch"},
-                            "args": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": ["url"],
-                                "properties": {
-                                    "url": {"type": "string"},
-                                },
-                            },
-                        },
-                    },
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["name", "args"],
-                        "properties": {
-                            "name": {"type": "string", "const": "schema_inspect"},
-                            "args": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": [],
-                                "properties": {},
-                            },
-                        },
-                    },
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["name", "args"],
-                        "properties": {
-                            "name": {"type": "string", "const": "sql_exec"},
-                            "args": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": ["sql"],
-                                "properties": {
-                                    "sql": {"type": "string"},
-                                },
-                            },
-                        },
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_BATCH_TOOL_CALLS,
+                        "items": tool_call_schema,
                     },
                 ]
             },
@@ -508,13 +581,15 @@ def subscription_decision_schema() -> dict[str, Any]:
     }
 
 
-def run_codex_subscription_prompt(settings: Settings, prompt: str) -> str:
+def run_codex_subscription_prompt(settings: Settings, prompt: str, *, batch_tools_enabled: bool) -> str:
     with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as tmp:
         output_path = Path(tmp.name)
 
-    with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as tmp_schema:
-        schema_path = Path(tmp_schema.name)
-        tmp_schema.write(json.dumps(subscription_decision_schema()))
+    schema_path: Path | None = None
+    if not batch_tools_enabled:
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as tmp_schema:
+            schema_path = Path(tmp_schema.name)
+            tmp_schema.write(json.dumps(subscription_decision_schema(batch_tools_enabled=False)))
 
     cmd = [
         settings.codex_subscription_bin,
@@ -522,11 +597,12 @@ def run_codex_subscription_prompt(settings: Settings, prompt: str) -> str:
         "--skip-git-repo-check",
         "--sandbox",
         "read-only",
-        "--output-schema",
-        str(schema_path),
         "--output-last-message",
         str(output_path),
     ]
+
+    if schema_path is not None:
+        cmd.extend(["--output-schema", str(schema_path)])
 
     # Only add --model if it is not "default" or empty
     # Codex CLI with ChatGPT login often fails if --model is specified explicitly
@@ -555,7 +631,7 @@ def run_codex_subscription_prompt(settings: Settings, prompt: str) -> str:
     finally:
         if output_path.exists():
             output_path.unlink(missing_ok=True)
-        if schema_path.exists():
+        if schema_path is not None and schema_path.exists():
             schema_path.unlink(missing_ok=True)
 
     if not output_text:
@@ -576,14 +652,14 @@ def run_codex_subscription_prompt(settings: Settings, prompt: str) -> str:
     return output_text
 
 
-def run_claude_subscription_prompt(settings: Settings, prompt: str) -> str:
+def run_claude_subscription_prompt(settings: Settings, prompt: str, *, batch_tools_enabled: bool) -> str:
     cmd = [
         settings.claude_subscription_bin,
         "-p",
         "--output-format",
         "text",
         "--json-schema",
-        json.dumps(subscription_decision_schema()),
+        json.dumps(subscription_decision_schema(batch_tools_enabled=batch_tools_enabled)),
         "--max-turns",
         "1",
         "--model",
@@ -619,11 +695,21 @@ def run_claude_subscription_prompt(settings: Settings, prompt: str) -> str:
     return output_text
 
 
-async def request_subscription_decision(settings: Settings, prompt: str) -> str:
+async def request_subscription_decision(settings: Settings, prompt: str, *, batch_tools_enabled: bool) -> str:
     if settings.model_provider == "codex_subscription":
-        return await asyncio.to_thread(run_codex_subscription_prompt, settings, prompt)
+        return await asyncio.to_thread(
+            run_codex_subscription_prompt,
+            settings,
+            prompt,
+            batch_tools_enabled=batch_tools_enabled,
+        )
     if settings.model_provider == "claude_subscription":
-        return await asyncio.to_thread(run_claude_subscription_prompt, settings, prompt)
+        return await asyncio.to_thread(
+            run_claude_subscription_prompt,
+            settings,
+            prompt,
+            batch_tools_enabled=batch_tools_enabled,
+        )
     raise RuntimeError(f"Unsupported subscription provider: {settings.model_provider}")
 
 
@@ -653,6 +739,95 @@ def emit_sql_observation(observation: str, tracker: RunTracker) -> None:
     tracker.emit("OBSERVATION", f"sql_exec raw={truncate_text(observation, 360)}")
 
 
+def subscription_observation_is_error(observation: str) -> bool:
+    parsed = safe_json_loads(observation)
+    if isinstance(parsed, dict) and "ok" in parsed:
+        return not bool(parsed.get("ok"))
+    return False
+
+
+def parse_subscription_tool_calls(
+    parsed: dict[str, Any],
+    *,
+    batch_tools_enabled: bool,
+) -> tuple[list[dict[str, Any]], bool, str | None]:
+    if batch_tools_enabled:
+        raw_batch = parsed.get("tool_calls")
+        if raw_batch is not None:
+            if not isinstance(raw_batch, list):
+                return [], True, "tool_calls must be an array when provided."
+            if len(raw_batch) == 0:
+                return [], True, "tool_calls cannot be empty."
+            if len(raw_batch) > MAX_BATCH_TOOL_CALLS:
+                return (
+                    [],
+                    True,
+                    f"tool_calls exceeds max size {MAX_BATCH_TOOL_CALLS}; use fewer actions.",
+                )
+
+            tool_calls: list[dict[str, Any]] = []
+            for index, item in enumerate(raw_batch, start=1):
+                if not isinstance(item, dict):
+                    return [], True, f"tool_calls[{index}] must be an object."
+                tool_calls.append(item)
+            return tool_calls, True, None
+
+    raw_single = parsed.get("tool_call")
+    if isinstance(raw_single, dict):
+        return [raw_single], False, None
+
+    return [], False, "Missing tool_call and no final_answer provided."
+
+
+async def execute_subscription_tool_call(
+    *,
+    tool_call: dict[str, Any],
+    tool_runtime: ToolRuntime,
+    tracker: RunTracker,
+    source_url: str,
+) -> tuple[str, str, dict[str, Any]]:
+    tool_name = str(tool_call.get("name", "")).strip()
+    raw_args = tool_call.get("args")
+    tool_args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+
+    if tool_name == "http_fetch":
+        url = str(tool_args.get("url") or source_url)
+        tracker.emit("ACTION", f"http_fetch args={{\"url\": \"{truncate_text(url, 220)}\"}}")
+        observation_text = await tool_runtime.http_fetch(url)
+        tracker.emit("OBSERVATION", f"http_fetch ok: {truncate_text(observation_text, 360)}")
+        return observation_text, tool_name, tool_args
+
+    if tool_name == "schema_inspect":
+        tracker.emit("ACTION", "schema_inspect args={}")
+        observation_text = tool_runtime.schema_inspect()
+        tracker.emit("OBSERVATION", f"schema_inspect ok: {truncate_text(observation_text, 360)}")
+        return observation_text, tool_name, tool_args
+
+    if tool_name == "sql_exec":
+        sql = str(tool_args.get("sql", "")).strip()
+        if not sql:
+            observation_text = json_dumps({"ok": False, "error": "Missing args.sql for sql_exec"})
+            tracker.emit("OBSERVATION", "sql_exec error=Missing args.sql")
+            return observation_text, tool_name, tool_args
+
+        tracker.emit("SQL", f"[{classify_sql(sql)}] {truncate_text(sql, 1200)}")
+        observation_text = tool_runtime.sql_exec(sql)
+        emit_sql_observation(observation_text, tracker)
+        return observation_text, tool_name, tool_args
+
+    observation_text = json_dumps(
+        {
+            "ok": False,
+            "error": (
+                f"Unknown tool '{tool_name}'. "
+                "Use one of: http_fetch, schema_inspect, sql_exec"
+            ),
+        }
+    )
+    tracker.emit("OBSERVATION", truncate_text(observation_text, 320))
+    return observation_text, tool_name, tool_args
+
+
 async def run_subscription_agent_loop(
     *,
     settings: Settings,
@@ -662,7 +837,14 @@ async def run_subscription_agent_loop(
     source_url: str,
 ) -> None:
     history: list[dict[str, Any]] = []
+    batch_tools_active = settings.batch_tools
+
     tracker.emit("THINK", "Subscription backend session started.")
+    if settings.batch_tools:
+        tracker.emit(
+            "MODE",
+            f"batch_tools=enabled max_batch_tool_calls={MAX_BATCH_TOOL_CALLS}",
+        )
 
     for step_no in range(1, settings.max_tool_iterations + 1):
         tracker.step_count = step_no
@@ -671,10 +853,15 @@ async def run_subscription_agent_loop(
             source_url=source_url,
             history=history,
             database_name=settings.database_name,
+            batch_tools_enabled=batch_tools_active,
         )
 
         decision_started_at = time.perf_counter()
-        raw_output = await request_subscription_decision(settings, prompt)
+        raw_output = await request_subscription_decision(
+            settings,
+            prompt,
+            batch_tools_enabled=batch_tools_active,
+        )
         decision_ms = int((time.perf_counter() - decision_started_at) * 1000)
         tracker.model_decision_ms += decision_ms
         parsed = extract_first_json_object(raw_output)
@@ -690,7 +877,7 @@ async def run_subscription_agent_loop(
 
         if not isinstance(parsed, dict):
             observation = (
-                "Model output is not valid JSON; expected a single JSON object with tool_call/final_answer."
+                "Model output is not valid JSON; expected a single JSON object with tool_call/tool_calls/final_answer."
             )
             tracker.emit("OBSERVATION", observation)
             history.append({
@@ -734,9 +921,12 @@ async def run_subscription_agent_loop(
             )
             return
 
-        tool_call = parsed.get("tool_call")
-        if not isinstance(tool_call, dict):
-            observation = "Missing tool_call and no final_answer provided."
+        selected_tool_calls, used_batch_response, parse_error = parse_subscription_tool_calls(
+            parsed,
+            batch_tools_enabled=batch_tools_active,
+        )
+        if parse_error:
+            observation = parse_error
             tracker.emit("OBSERVATION", observation)
             history.append({"step": step_no, "error": observation})
             tracker.append_step_perf(
@@ -751,65 +941,60 @@ async def run_subscription_agent_loop(
                     "total_ms": decision_ms,
                 }
             )
+
+            if used_batch_response and batch_tools_active:
+                batch_tools_active = False
+                tracker.emit(
+                    "MODE",
+                    "batch_tools disabled: invalid batch response format; falling back to single-step mode.",
+                )
             continue
 
-        tool_name = str(tool_call.get("name", "")).strip()
-        raw_args = tool_call.get("args")
-        tool_args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
-        observation_text = ""
-        tool_error_text: str | None = None
-        before_tool_exec_ms = tool_runtime.total_tool_exec_ms
-        before_db_exec_ms = tool_runtime.total_db_exec_ms
+        batch_error: str | None = None
+        batch_size = len(selected_tool_calls)
 
-        try:
-            if tool_name == "http_fetch":
-                url = str(tool_args.get("url") or source_url)
-                tracker.emit("ACTION", f"http_fetch args={{\"url\": \"{truncate_text(url, 220)}\"}}")
-                observation_text = await tool_runtime.http_fetch(url)
-                tracker.emit("OBSERVATION", f"http_fetch ok: {truncate_text(observation_text, 360)}")
+        for call_index, tool_call in enumerate(selected_tool_calls, start=1):
+            tool_name = str(tool_call.get("name", "")).strip() or "unknown_tool"
+            raw_args = tool_call.get("args")
+            tool_args: dict[str, Any] = raw_args if isinstance(raw_args, dict) else {}
+            observation_text = ""
+            tool_error_text: str | None = None
 
-            elif tool_name == "schema_inspect":
-                tracker.emit("ACTION", "schema_inspect args={}")
-                observation_text = tool_runtime.schema_inspect()
-                tracker.emit("OBSERVATION", f"schema_inspect ok: {truncate_text(observation_text, 360)}")
+            before_tool_exec_ms = tool_runtime.total_tool_exec_ms
+            before_db_exec_ms = tool_runtime.total_db_exec_ms
 
-            elif tool_name == "sql_exec":
-                sql = str(tool_args.get("sql", "")).strip()
-                if not sql:
-                    observation_text = json_dumps({"ok": False, "error": "Missing args.sql for sql_exec"})
-                    tracker.emit("OBSERVATION", "sql_exec error=Missing args.sql")
-                else:
-                    tracker.emit("SQL", f"[{classify_sql(sql)}] {truncate_text(sql, 1200)}")
-                    observation_text = tool_runtime.sql_exec(sql)
-                    emit_sql_observation(observation_text, tracker)
-
-            else:
-                observation_text = json_dumps(
-                    {
-                        "ok": False,
-                        "error": (
-                            f"Unknown tool '{tool_name}'. "
-                            "Use one of: http_fetch, schema_inspect, sql_exec"
-                        ),
-                    }
+            try:
+                observation_text, tool_name, tool_args = await execute_subscription_tool_call(
+                    tool_call=tool_call,
+                    tool_runtime=tool_runtime,
+                    tracker=tracker,
+                    source_url=source_url,
                 )
-                tracker.emit("OBSERVATION", truncate_text(observation_text, 320))
-        except Exception as exc:  # noqa: BLE001
-            tool_error_text = str(exc)
-            raise
-        finally:
+            except Exception as exc:  # noqa: BLE001
+                tool_error_text = str(exc)
+                observation_text = json_dumps({"ok": False, "error": tool_error_text})
+                tracker.emit(
+                    "OBSERVATION",
+                    f"{tool_name} exception={truncate_text(tool_error_text, 360)}",
+                )
+
             step_tool_exec_ms = max(tool_runtime.total_tool_exec_ms - before_tool_exec_ms, 0)
             step_db_exec_ms = max(tool_runtime.total_db_exec_ms - before_db_exec_ms, 0)
+            decision_cost_ms = decision_ms if call_index == 1 else 0
+
             step_payload: dict[str, Any] = {
                 "ts": utc_now_iso(),
                 "step_no": step_no,
+                "call_index": call_index,
+                "batch_size": batch_size,
                 "status": "tool_exception" if tool_error_text else "tool_called",
-                "decision_ms": decision_ms,
+                "decision_ms": decision_cost_ms,
                 "tool_name": tool_name,
                 "tool_exec_ms": step_tool_exec_ms,
                 "db_exec_ms": step_db_exec_ms,
-                "total_ms": decision_ms + step_tool_exec_ms,
+                "total_ms": decision_cost_ms + step_tool_exec_ms,
             }
+
             if observation_text:
                 parsed_observation = safe_json_loads(observation_text)
                 if isinstance(parsed_observation, dict) and "ok" in parsed_observation:
@@ -818,14 +1003,39 @@ async def run_subscription_agent_loop(
                 step_payload["error"] = truncate_text(tool_error_text, 360)
             tracker.append_step_perf(step_payload)
 
-        history.append(
-            {
-                "step": step_no,
-                "thought": thought,
-                "tool_call": {"name": tool_name, "args": tool_args},
-                "observation": summarize_observation_for_history(observation_text),
-            }
-        )
+            history.append(
+                {
+                    "step": step_no,
+                    "call_index": call_index,
+                    "thought": thought,
+                    "tool_call": {"name": tool_name, "args": tool_args},
+                    "observation": summarize_observation_for_history(observation_text),
+                }
+            )
+
+            call_failed = bool(tool_error_text) or subscription_observation_is_error(observation_text)
+            if call_failed:
+                batch_error = truncate_text(observation_text, 360)
+                if not used_batch_response:
+                    if tool_error_text:
+                        raise RuntimeError(tool_error_text)
+                    break
+                break
+
+        if used_batch_response and batch_error and batch_tools_active:
+            batch_tools_active = False
+            tracker.emit(
+                "MODE",
+                "batch_tools disabled after batch execution failure; falling back to single-step mode.",
+            )
+            history.append(
+                {
+                    "step": step_no,
+                    "mode": "fallback",
+                    "reason": summarize_observation_for_history(batch_error),
+                }
+            )
+            continue
 
     if not tracker.final_answer:
         tracker.final_answer = (
@@ -1107,6 +1317,7 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             f"reasoning_effort={settings.model_reasoning_effort or 'default'}"
         ),
     )
+    tracker.emit("MODE", f"batch_tools={settings.batch_tools}")
 
     sandbox = TiDBSandbox(instance=instance, database_name=settings.database_name)
     model_client: Any | None = None
@@ -1228,6 +1439,7 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             "status": "completed",
             "provider": settings.model_provider,
             "model": settings.model_name,
+            "batch_tools_enabled": settings.batch_tools,
             "run_total_ms": run_total_ms,
             "zero_provision_ms": zero_provision_ms,
             "model_decision_ms": model_decision_ms,
@@ -1286,6 +1498,7 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             "status": "failed",
             "provider": settings.model_provider,
             "model": settings.model_name,
+            "batch_tools_enabled": settings.batch_tools,
             "run_total_ms": run_total_ms,
             "zero_provision_ms": zero_provision_ms,
             "model_decision_ms": model_decision_ms,
@@ -1421,9 +1634,14 @@ def audit_run(runs_dir: Path, run_id: str) -> None:
                 pct = ""
                 if run_total_ms and run_total_ms > 0:
                     pct = f" pct_of_run={((total_ms / run_total_ms) * 100):.1f}%"
+                call_suffix = ""
+                call_index = item.get("call_index")
+                batch_size = item.get("batch_size")
+                if isinstance(call_index, int) and isinstance(batch_size, int):
+                    call_suffix = f" call={call_index}/{batch_size}"
                 print(
                     "[PERF_STEP] "
-                    f"step={item.get('step_no')} "
+                    f"step={item.get('step_no')}{call_suffix} "
                     f"status={item.get('status')} "
                     f"tool={item.get('tool_name')} "
                     f"decision_ms={item.get('decision_ms')} "

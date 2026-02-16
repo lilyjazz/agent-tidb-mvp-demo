@@ -20,6 +20,18 @@ def _optional_env(name: str) -> str | None:
     return value or None
 
 
+def _optional_env_bool(name: str) -> bool | None:
+    raw = _optional_env(name)
+    if raw is None:
+        return None
+    lowered = raw.lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value for {name}: {raw}")
+
+
 def _normalize_provider(raw: str) -> str:
     provider = raw.strip().lower()
     aliases = {
@@ -132,6 +144,7 @@ class Settings:
     codex_subscription_bin: str
     claude_subscription_bin: str
     model_name: str
+    batch_tools: bool
     tidb_zero_tag: str
     database_name: str
     runs_dir: Path
@@ -154,6 +167,7 @@ class Settings:
         model_api_key: str | None = None,
         codex_subscription_bin: str | None = None,
         claude_subscription_bin: str | None = None,
+        batch_tools: bool | None = None,
         tidb_zero_tag: str | None = None,
         max_tool_iterations: int | None = None,
         sql_row_limit: int | None = None,
@@ -172,6 +186,8 @@ class Settings:
         )
         resolved_codex_subscription_bin = codex_subscription_bin or os.getenv("CODEX_SUBSCRIPTION_BIN", "codex")
         resolved_claude_subscription_bin = claude_subscription_bin or os.getenv("CLAUDE_SUBSCRIPTION_BIN", "claude")
+        env_batch_tools = _optional_env_bool("BATCH_TOOLS")
+        resolved_batch_tools = batch_tools if batch_tools is not None else (env_batch_tools or False)
 
         resolved_tag = tidb_zero_tag or os.getenv("TIDB_ZERO_TAG", "agent-demo")
         resolved_db_name = os.getenv("TIDB_DB_NAME", "agent_sandbox")
@@ -192,6 +208,7 @@ class Settings:
             codex_subscription_bin=resolved_codex_subscription_bin,
             claude_subscription_bin=resolved_claude_subscription_bin,
             model_name=resolved_model,
+            batch_tools=resolved_batch_tools,
             tidb_zero_tag=resolved_tag,
             database_name=resolved_db_name,
             runs_dir=resolved_runs_dir,

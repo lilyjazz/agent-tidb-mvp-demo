@@ -97,6 +97,14 @@ def run_command(
         "--model-max-retries",
         help="Override model API max retries.",
     ),
+    batch_tools: bool | None = typer.Option(
+        None,
+        "--batch-tools/--no-batch-tools",
+        help=(
+            "Enable multi-action decisions for subscription providers. "
+            "If batch execution fails, the run automatically falls back to single-step mode."
+        ),
+    ),
     max_tool_iterations: int | None = typer.Option(
         None,
         "--max-tool-iterations",
@@ -118,6 +126,7 @@ def run_command(
             tidb_zero_tag=tag,
             model_timeout_sec=model_timeout_sec,
             model_max_retries=model_max_retries,
+            batch_tools=batch_tools,
             max_tool_iterations=max_tool_iterations,
         )
     except ValueError as exc:
