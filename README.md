@@ -32,7 +32,7 @@ cp .env.example .env
 **:flight_departure: One-Liner (Earthquake Analysis):**
 ```bash
 .venv/bin/zero-agent-demo run \
-  "Find where magnitude >= 4 earthquakes happened last 24 hours and summarize the lastest clusters." \
+  "Find and summarize the lastest clusters." \
   --source-url "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
 ```
 
@@ -52,7 +52,7 @@ Try these live data sources. The agent handles the schema automatically.
 **Startup Trends (TechCrunch):**
 ```bash
 .venv/bin/zero-agent-demo run \
-  "Summarize top 3 startup trends from today's feed." \
+  "Summarize top 1 startup trends from today's feed." \
   --source-url "https://techcrunch.com/feed/"
 ```
 
