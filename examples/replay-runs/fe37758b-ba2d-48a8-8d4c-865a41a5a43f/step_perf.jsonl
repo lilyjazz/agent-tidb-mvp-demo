@@ -1,0 +1,5 @@
+{"ts": "2026-02-16T05:47:28.415460+00:00", "step_no": 1, "call_index": 1, "batch_size": 1, "status": "tool_called", "decision_ms": 17663, "tool_name": "http_fetch", "tool_exec_ms": 1655, "db_exec_ms": 0, "total_ms": 19318}
+{"ts": "2026-02-16T05:47:45.985699+00:00", "step_no": 2, "call_index": 1, "batch_size": 1, "status": "tool_called", "decision_ms": 15456, "tool_name": "sql_exec", "tool_exec_ms": 2112, "db_exec_ms": 728, "total_ms": 17568, "tool_ok": true}
+{"ts": "2026-02-16T05:48:39.802943+00:00", "step_no": 3, "call_index": 1, "batch_size": 1, "status": "tool_called", "decision_ms": 52881, "tool_name": "sql_exec", "tool_exec_ms": 932, "db_exec_ms": 222, "total_ms": 53813, "tool_ok": true}
+{"ts": "2026-02-16T05:49:11.570790+00:00", "step_no": 4, "call_index": 1, "batch_size": 1, "status": "tool_called", "decision_ms": 30885, "tool_name": "sql_exec", "tool_exec_ms": 879, "db_exec_ms": 222, "total_ms": 31764, "tool_ok": true}
+{"ts": "2026-02-16T05:49:28.151761+00:00", "step_no": 5, "status": "final", "decision_ms": 16576, "tool_name": null, "tool_exec_ms": 0, "db_exec_ms": 0, "total_ms": 16576}

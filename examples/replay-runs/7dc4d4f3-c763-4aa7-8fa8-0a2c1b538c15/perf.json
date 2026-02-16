@@ -1,0 +1,28 @@
+{
+  "run_id": "7dc4d4f3-c763-4aa7-8fa8-0a2c1b538c15",
+  "status": "completed",
+  "provider": "codex_subscription",
+  "model": "gpt-5.3-codex",
+  "batch_tools_enabled": false,
+  "run_total_ms": 491203,
+  "zero_provision_ms": 1562,
+  "model_decision_ms": 474341,
+  "tool_exec_ms": 8262,
+  "db_exec_ms": 1629,
+  "other_overhead_ms": 7038,
+  "tool_exec_ms_by_name": {
+    "http_fetch": 2177,
+    "sql_exec": 6085
+  },
+  "db_exec_ms_by_statement_type": {
+    "DDL": 271,
+    "DML": 443,
+    "QUERY": 915
+  },
+  "db_exec_ms_by_task": {
+    "sql_exec": 1629
+  },
+  "step_count": 10,
+  "sql_count": 6,
+  "ddl_count": 1
+}
