@@ -1,0 +1,3 @@
+Top 1 startup trend from today's feed (2026-02-16): AI-driven data center infrastructure optimization (power bottleneck focus).
+SQL evidence: SELECT categories AS trend_signal, COUNT(*) AS article_count FROM agent_sandbox.techcrunch_feed_items WHERE DATE(pub_date) = '2026-02-16' GROUP BY categories ORDER BY article_count DESC LIMIT 1;
+Result: trend_signal = 'Startups,AI,data centers', article_count = 1.

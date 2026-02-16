@@ -1,0 +1,4 @@
+SQL evidence from the clustering query on `agent_sandbox.earthquakes_events` (`GROUP BY lat_bin, lon_bin ORDER BY latest_event_ms DESC`) returned:
+1) cluster_cell=60.7,-151.6, events=1, latest_event_ms=1771219484761, earliest_event_ms=1771219484761, avg_mag=1.8, max_mag=1.8, event_ids=ak2026dgweip
+2) cluster_cell=35.6,-98, events=1, latest_event_ms=1771219320882, earliest_event_ms=1771219320882, avg_mag=2.7, max_mag=2.7, event_ids=us6000s9gj
+Summary: the latest cluster is 60.7,-151.6 (Alaska), followed by 35.6,-98 (Oklahoma). Note this is based on currently loaded SQL rows (2 events), so it is a partial all_day feed summary.
