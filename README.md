@@ -139,8 +139,3 @@ Same run parameters for both groups: `--max-tool-iterations 8 --model-timeout-se
 | Multi action (`--batch-tools`) | `70081` | `67446` | `57495` | `3.0` |
 
 Observed delta in this benchmark: multi-action was about **27.7% faster** on average.
-
-Run IDs:
-
-- Single action: `75989d44-6f59-4b1d-91c4-90970a045cf3`, `4d9edaec-63c8-4a08-a8ed-fd9e9bec7017`, `120f491b-d510-407c-b180-29f8c0d9f482`
-- Multi action: `7c71514d-70b8-4e58-b310-f406fb76031e`, `a2575a23-bb74-473e-b4be-9b126431e6ca`, `9820a048-6fe4-4be0-afdd-ae6b81c456d4`
