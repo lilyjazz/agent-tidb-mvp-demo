@@ -101,41 +101,4 @@ Full list of environment variables:
 | `MODEL_API_KEY` | Required if using API providers | - |
 | `MODEL_NAME` | Specific model version (e.g. `gpt-4o`) | Provider default |
 | `TIDB_ZERO_TAG` | Tag for the ephemeral instance | `agent-demo` |
-| `BATCH_TOOLS` | Enable multi-action decisions in subscription mode (`true`/`false`) | `false` |
-
----
-
-## Performance Optimization (Optional)
-
-This section is for runtime optimization only (not required for onboarding/first run).
-
-### Multi-action per decision (safe fallback)
-
-- Default behavior is single action per model decision.
-- Enable batched actions with `--batch-tools` (or `BATCH_TOOLS=true`).
-- Batch mode is only for subscription providers (`codex_subscription` / `claude_subscription`).
-- Safety behavior: if a batched response is invalid or a batched tool call fails, runtime auto-falls back to single-step mode.
-
-Example:
-
-```bash
-.venv/bin/zero-agent-demo run \
-  "Find the list of user names and count total users." \
-  --source-url "https://jsonplaceholder.typicode.com/users" \
-  --batch-tools
-```
-
-### Local benchmark snapshot (N=3)
-
-Task: `Find the list of user names and count total users.`
-
-Source URL: `https://jsonplaceholder.typicode.com/users`
-
-Same run parameters for both groups: `--max-tool-iterations 8 --model-timeout-sec 120`
-
-| Mode | Avg run_total_ms | Median run_total_ms | Avg model_decision_ms | Avg step_count |
-| :--- | ---: | ---: | ---: | ---: |
-| Single action (`--no-batch-tools`) | `96917` | `94552` | `84417` | `5.0` |
-| Multi action (`--batch-tools`) | `70081` | `67446` | `57495` | `3.0` |
-
-Observed delta in this benchmark: multi-action was about **27.7% faster** on average.
+| `BATCH_TOOLS (EXPERIMENTS)` | Enable multi-action decisions in subscription mode (`true`/`false`) | `false` |
