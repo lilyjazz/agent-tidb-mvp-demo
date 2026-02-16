@@ -58,6 +58,18 @@ def truncate_text(text: str, limit: int = 320) -> str:
     return text[: limit - 15] + "...[truncated]"
 
 
+def truncate_middle_text(text: str, limit: int = 320) -> str:
+    if len(text) <= limit:
+        return text
+    marker = "...[truncated]..."
+    budget = limit - len(marker)
+    if budget <= 20:
+        return text[: max(limit - 3, 0)] + "..."
+    head = budget // 2
+    tail = budget - head
+    return text[:head] + marker + text[-tail:]
+
+
 def normalize_sql(raw_sql: str) -> str:
     sql = raw_sql.strip()
     if sql.startswith("```") and sql.endswith("```"):
@@ -673,7 +685,7 @@ def run_codex_subscription_prompt(settings: Settings, prompt: str, *, batch_tool
             output_text = json_dumps(stderr_json)
 
     if completed.returncode != 0 and not output_text:
-        stderr = truncate_text((completed.stderr or "").strip(), 1800)
+        stderr = truncate_middle_text((completed.stderr or "").strip(), 1800)
         raise RuntimeError(f"Codex CLI failed with code {completed.returncode}: {stderr}")
 
     if not output_text:
@@ -725,22 +737,54 @@ def run_claude_subscription_prompt(settings: Settings, prompt: str, *, batch_too
     return output_text
 
 
+def is_retryable_subscription_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    markers = [
+        "timeout",
+        "timed out",
+        "network error",
+        "transport error",
+        "stream disconnected",
+        "connection reset",
+        "temporary failure",
+        "temporarily unavailable",
+        "rate limit",
+        "429",
+    ]
+    return any(marker in text for marker in markers)
+
+
 async def request_subscription_decision(settings: Settings, prompt: str, *, batch_tools_enabled: bool) -> str:
     if settings.model_provider == "codex_subscription":
-        return await asyncio.to_thread(
-            run_codex_subscription_prompt,
-            settings,
-            prompt,
-            batch_tools_enabled=batch_tools_enabled,
-        )
-    if settings.model_provider == "claude_subscription":
-        return await asyncio.to_thread(
-            run_claude_subscription_prompt,
-            settings,
-            prompt,
-            batch_tools_enabled=batch_tools_enabled,
-        )
-    raise RuntimeError(f"Unsupported subscription provider: {settings.model_provider}")
+        runner = run_codex_subscription_prompt
+    elif settings.model_provider == "claude_subscription":
+        runner = run_claude_subscription_prompt
+    else:
+        raise RuntimeError(f"Unsupported subscription provider: {settings.model_provider}")
+
+    max_attempts = max(settings.model_max_retries, 0) + 1
+    delay_sec = 1.0
+    last_exc: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await asyncio.to_thread(
+                runner,
+                settings,
+                prompt,
+                batch_tools_enabled=batch_tools_enabled,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            should_retry = is_retryable_subscription_error(exc) and attempt < max_attempts
+            if not should_retry:
+                raise
+            await asyncio.sleep(delay_sec)
+            delay_sec = min(delay_sec * 2, 4.0)
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Subscription decision failed without a specific error")
 
 
 def summarize_observation_for_history(text: str, limit: int = 1800) -> str:
@@ -887,11 +931,70 @@ async def run_subscription_agent_loop(
         )
 
         decision_started_at = time.perf_counter()
-        raw_output = await request_subscription_decision(
-            settings,
-            prompt,
-            batch_tools_enabled=batch_tools_active,
-        )
+        decision_error: str | None = None
+        try:
+            raw_output = await request_subscription_decision(
+                settings,
+                prompt,
+                batch_tools_enabled=batch_tools_active,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if batch_tools_active:
+                batch_tools_active = False
+                tracker.emit(
+                    "MODE",
+                    "batch_tools disabled: model decision failed; retrying this step in single-step mode.",
+                )
+                history.append(
+                    {
+                        "step": step_no,
+                        "mode": "fallback",
+                        "reason": summarize_observation_for_history(str(exc), 800),
+                    }
+                )
+                try:
+                    raw_output = await request_subscription_decision(
+                        settings,
+                        prompt,
+                        batch_tools_enabled=False,
+                    )
+                except Exception as retry_exc:  # noqa: BLE001
+                    decision_error = truncate_middle_text(str(retry_exc), 720)
+                    decision_ms = int((time.perf_counter() - decision_started_at) * 1000)
+                    tracker.model_decision_ms += decision_ms
+                    tracker.append_step_perf(
+                        {
+                            "ts": utc_now_iso(),
+                            "step_no": step_no,
+                            "status": "decision_error",
+                            "decision_ms": decision_ms,
+                            "tool_name": None,
+                            "tool_exec_ms": 0,
+                            "db_exec_ms": 0,
+                            "total_ms": decision_ms,
+                            "error": decision_error,
+                        }
+                    )
+                    raise
+            else:
+                decision_error = truncate_middle_text(str(exc), 720)
+                decision_ms = int((time.perf_counter() - decision_started_at) * 1000)
+                tracker.model_decision_ms += decision_ms
+                tracker.append_step_perf(
+                    {
+                        "ts": utc_now_iso(),
+                        "step_no": step_no,
+                        "status": "decision_error",
+                        "decision_ms": decision_ms,
+                        "tool_name": None,
+                        "tool_exec_ms": 0,
+                        "db_exec_ms": 0,
+                        "total_ms": decision_ms,
+                        "error": decision_error,
+                    }
+                )
+                raise
+
         decision_ms = int((time.perf_counter() - decision_started_at) * 1000)
         tracker.model_decision_ms += decision_ms
         parsed = extract_first_json_object(raw_output)
