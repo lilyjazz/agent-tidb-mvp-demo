@@ -102,6 +102,22 @@ Every run is recorded in `.runs/`.
 .venv/bin/zero-agent-demo conn <run_id>
 ```
 
+Sample successful replay snapshots are available under `examples/replay-runs/`.
+
+```bash
+RUNS_DIR=examples/replay-runs .venv/bin/zero-agent-demo replay <run_id>
+RUNS_DIR=examples/replay-runs .venv/bin/zero-agent-demo audit <run_id>
+```
+
+Preloaded replay run IDs and scenarios:
+
+| Run ID | Scenario | Source |
+| :--- | :--- | :--- |
+| `fe37758b-ba2d-48a8-8d4c-865a41a5a43f` | Dominant engineering topics from Lobsters hottest feed | `https://lobste.rs/hottest.json` |
+| `42415b9f-e91c-4b0b-87e9-d12604ca7b80` | Top startup trend from today's TechCrunch feed | `https://techcrunch.com/feed/` |
+| `934bc942-f0dd-442f-8c48-ff9edd698a9d` | Tokyo weather next 48h trend and biggest drop | `https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2` |
+| `7dc4d4f3-c763-4aa7-8fa8-0a2c1b538c15` | Earthquake cluster summary from USGS all-day feed | `https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson` |
+
 ---
 
 ## Advanced Configuration
