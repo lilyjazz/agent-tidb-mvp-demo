@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,6 +25,10 @@ app = typer.Typer(
 
 def resolve_runs_dir() -> Path:
     return Path(os.getenv("RUNS_DIR", ".runs"))
+
+
+def cli_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def resolve_non_empty(value: str | None, prompt_text: str) -> str:
@@ -135,14 +140,15 @@ def run_command(
     try:
         result = asyncio.run(run_autonomous_demo(settings, resolved_goal, resolved_source_url))
     except Exception as exc:  # noqa: BLE001
-        typer.echo(f"[ERROR] {exc}")
+        typer.echo(f"[{cli_now_iso()}][ERROR] {exc}")
         if is_timeout_like_error(exc):
             typer.echo(
-                "[HINT] Model request timed out. Increase MODEL_TIMEOUT_SEC (for example 120 or 180), "
+                f"[{cli_now_iso()}][HINT] Model request timed out. Increase MODEL_TIMEOUT_SEC "
+                "(for example 120 or 180), "
                 "or pass --model-timeout-sec 180 and retry."
             )
         raise typer.Exit(code=1)
-    print(f"[RUN_COMPLETE] run_id={result.run_id} run_dir={result.run_dir}")
+    print(f"[{cli_now_iso()}][RUN_COMPLETE] run_id={result.run_id} run_dir={result.run_dir}")
 
 
 @app.command("replay")

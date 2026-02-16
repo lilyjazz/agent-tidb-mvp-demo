@@ -37,6 +37,21 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def format_ms(ms: int) -> str:
+    return f"{(max(ms, 0) / 1000):.3f}s"
+
+
+def format_duration_map(ms_by_key: dict[str, int]) -> str:
+    if not ms_by_key:
+        return ""
+
+    parts: list[str] = []
+    for key, value in sorted(ms_by_key.items(), key=lambda item: (-item[1], item[0])):
+        safe_value = max(int(value), 0)
+        parts.append(f"{key}={safe_value}ms ({format_ms(safe_value)})")
+    return " ".join(parts)
+
+
 def truncate_text(text: str, limit: int = 320) -> str:
     if len(text) <= limit:
         return text
@@ -143,12 +158,13 @@ class RunTracker:
     model_decision_ms: int = 0
 
     def emit(self, kind: str, message: str) -> None:
-        line = f"[{kind}] {message}"
+        ts = utc_now_iso()
+        line = f"[{ts}][{kind}] {message}"
         print(line, flush=True)
         self._append_jsonl(
             self.artifacts.timeline_path,
             {
-                "ts": utc_now_iso(),
+                "ts": ts,
                 "kind": kind,
                 "message": message,
             },
@@ -205,10 +221,17 @@ class ToolRuntime:
         self.http_timeout_sec = http_timeout_sec
         self.total_tool_exec_ms = 0
         self.total_db_exec_ms = 0
+        self.tool_exec_ms_by_name: dict[str, int] = {}
+        self.db_exec_ms_by_statement_type: dict[str, int] = {}
+        self.db_exec_ms_by_task: dict[str, int] = {}
 
-    def _record_tool_elapsed(self, started_at: float) -> None:
+    def _record_tool_elapsed(self, started_at: float, *, tool_name: str | None = None) -> int:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-        self.total_tool_exec_ms += max(elapsed_ms, 0)
+        safe_elapsed_ms = max(elapsed_ms, 0)
+        self.total_tool_exec_ms += safe_elapsed_ms
+        if tool_name:
+            self.tool_exec_ms_by_name[tool_name] = self.tool_exec_ms_by_name.get(tool_name, 0) + safe_elapsed_ms
+        return safe_elapsed_ms
 
     async def http_fetch(self, url: str) -> str:
         """Fetch a public HTTP/HTTPS URL with GET and return status, headers, and body text."""
@@ -229,17 +252,17 @@ class ToolRuntime:
             }
             return json_dumps(payload)
         finally:
-            self._record_tool_elapsed(started_at)
+            self._record_tool_elapsed(started_at, tool_name="http_fetch")
 
     def log_thought(self, thought: str) -> str:
         """Record a concise thought summary before taking an action."""
         started_at = time.perf_counter()
         cleaned = thought.strip()
         if not cleaned:
-            self._record_tool_elapsed(started_at)
+            self._record_tool_elapsed(started_at, tool_name="log_thought")
             return json_dumps({"ok": False, "error": "thought cannot be empty"})
         payload = json_dumps({"ok": True, "thought": truncate_text(cleaned, 800)})
-        self._record_tool_elapsed(started_at)
+        self._record_tool_elapsed(started_at, tool_name="log_thought")
         return payload
 
     def schema_inspect(self) -> str:
@@ -259,10 +282,12 @@ class ToolRuntime:
             ORDER BY table_name, ordinal_position
             """
             result, elapsed_ms = self.sandbox.execute_sql(sql, max_rows=2000)
-            self.total_db_exec_ms += max(elapsed_ms, 0)
+            safe_db_ms = max(elapsed_ms, 0)
+            self.total_db_exec_ms += safe_db_ms
+            self.db_exec_ms_by_task["schema_inspect"] = self.db_exec_ms_by_task.get("schema_inspect", 0) + safe_db_ms
             return json_dumps(result)
         finally:
-            self._record_tool_elapsed(started_at)
+            self._record_tool_elapsed(started_at, tool_name="schema_inspect")
 
     def sql_exec(self, sql: str) -> str:
         """Execute exactly one SQL statement against TiDB Zero and return JSON result."""
@@ -292,7 +317,12 @@ class ToolRuntime:
                 error_text = str(exc)
                 ok = False
 
-            self.total_db_exec_ms += max(elapsed_ms, 0)
+            safe_db_ms = max(elapsed_ms, 0)
+            self.total_db_exec_ms += safe_db_ms
+            self.db_exec_ms_by_task["sql_exec"] = self.db_exec_ms_by_task.get("sql_exec", 0) + safe_db_ms
+            self.db_exec_ms_by_statement_type[statement_type] = (
+                self.db_exec_ms_by_statement_type.get(statement_type, 0) + safe_db_ms
+            )
 
             try:
                 self.sandbox.log_sql_audit(
@@ -329,7 +359,7 @@ class ToolRuntime:
             }
             return json_dumps(response)
         finally:
-            self._record_tool_elapsed(started_at)
+            self._record_tool_elapsed(started_at, tool_name="sql_exec")
 
 
 def build_system_message(database_name: str) -> str:
@@ -1430,10 +1460,14 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
         run_total_ms = int((time.perf_counter() - run_started_at) * 1000)
         total_tool_exec_ms = tool_runtime.total_tool_exec_ms if tool_runtime is not None else 0
         total_db_exec_ms = tool_runtime.total_db_exec_ms if tool_runtime is not None else 0
+        tool_exec_ms_by_name = dict(tool_runtime.tool_exec_ms_by_name) if tool_runtime is not None else {}
+        db_exec_ms_by_statement_type = dict(tool_runtime.db_exec_ms_by_statement_type) if tool_runtime is not None else {}
+        db_exec_ms_by_task = dict(tool_runtime.db_exec_ms_by_task) if tool_runtime is not None else {}
         model_decision_ms = tracker.model_decision_ms
         if model_decision_ms <= 0 and not is_subscription_provider(settings.model_provider):
             derived_model_ms = run_total_ms - zero_provision_ms - total_tool_exec_ms
             model_decision_ms = max(derived_model_ms, 0)
+        other_overhead_ms = max(run_total_ms - zero_provision_ms - model_decision_ms - total_tool_exec_ms, 0)
         perf_payload = {
             "run_id": run_id,
             "status": "completed",
@@ -1445,6 +1479,10 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             "model_decision_ms": model_decision_ms,
             "tool_exec_ms": total_tool_exec_ms,
             "db_exec_ms": total_db_exec_ms,
+            "other_overhead_ms": other_overhead_ms,
+            "tool_exec_ms_by_name": tool_exec_ms_by_name,
+            "db_exec_ms_by_statement_type": db_exec_ms_by_statement_type,
+            "db_exec_ms_by_task": db_exec_ms_by_task,
             "step_count": tracker.step_count,
             "sql_count": tracker.sql_count,
             "ddl_count": tracker.ddl_count,
@@ -1458,6 +1496,26 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
                 f"db_exec_ms={total_db_exec_ms} step_count={tracker.step_count}"
             ),
         )
+        tracker.emit(
+            "TIME_TOTAL",
+            f"overall={format_ms(run_total_ms)} ({run_total_ms}ms)",
+        )
+        tracker.emit(
+            "TIME_PHASE",
+            (
+                f"tidb_zero={format_ms(zero_provision_ms)} ({zero_provision_ms}ms) "
+                f"model_decision={format_ms(model_decision_ms)} ({model_decision_ms}ms) "
+                f"tool_exec={format_ms(total_tool_exec_ms)} ({total_tool_exec_ms}ms) "
+                f"db_exec={format_ms(total_db_exec_ms)} ({total_db_exec_ms}ms) "
+                f"overhead={format_ms(other_overhead_ms)} ({other_overhead_ms}ms)"
+            ),
+        )
+        tool_tasks_text = format_duration_map(tool_exec_ms_by_name)
+        if tool_tasks_text:
+            tracker.emit("TIME_TASKS", tool_tasks_text)
+        sql_tasks_text = format_duration_map(db_exec_ms_by_statement_type)
+        if sql_tasks_text:
+            tracker.emit("TIME_SQL", sql_tasks_text)
         try:
             sandbox.log_run_end(run_id, final_answer, status="completed")
         except Exception as log_exc:  # noqa: BLE001
@@ -1489,10 +1547,14 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
         run_total_ms = int((time.perf_counter() - run_started_at) * 1000)
         total_tool_exec_ms = tool_runtime.total_tool_exec_ms if tool_runtime is not None else 0
         total_db_exec_ms = tool_runtime.total_db_exec_ms if tool_runtime is not None else 0
+        tool_exec_ms_by_name = dict(tool_runtime.tool_exec_ms_by_name) if tool_runtime is not None else {}
+        db_exec_ms_by_statement_type = dict(tool_runtime.db_exec_ms_by_statement_type) if tool_runtime is not None else {}
+        db_exec_ms_by_task = dict(tool_runtime.db_exec_ms_by_task) if tool_runtime is not None else {}
         model_decision_ms = tracker.model_decision_ms
         if model_decision_ms <= 0 and not is_subscription_provider(settings.model_provider):
             derived_model_ms = run_total_ms - zero_provision_ms - total_tool_exec_ms
             model_decision_ms = max(derived_model_ms, 0)
+        other_overhead_ms = max(run_total_ms - zero_provision_ms - model_decision_ms - total_tool_exec_ms, 0)
         perf_payload = {
             "run_id": run_id,
             "status": "failed",
@@ -1504,6 +1566,10 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             "model_decision_ms": model_decision_ms,
             "tool_exec_ms": total_tool_exec_ms,
             "db_exec_ms": total_db_exec_ms,
+            "other_overhead_ms": other_overhead_ms,
+            "tool_exec_ms_by_name": tool_exec_ms_by_name,
+            "db_exec_ms_by_statement_type": db_exec_ms_by_statement_type,
+            "db_exec_ms_by_task": db_exec_ms_by_task,
             "step_count": tracker.step_count,
             "sql_count": tracker.sql_count,
             "ddl_count": tracker.ddl_count,
@@ -1518,6 +1584,26 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
                 f"db_exec_ms={total_db_exec_ms} step_count={tracker.step_count}"
             ),
         )
+        tracker.emit(
+            "TIME_TOTAL",
+            f"overall={format_ms(run_total_ms)} ({run_total_ms}ms)",
+        )
+        tracker.emit(
+            "TIME_PHASE",
+            (
+                f"tidb_zero={format_ms(zero_provision_ms)} ({zero_provision_ms}ms) "
+                f"model_decision={format_ms(model_decision_ms)} ({model_decision_ms}ms) "
+                f"tool_exec={format_ms(total_tool_exec_ms)} ({total_tool_exec_ms}ms) "
+                f"db_exec={format_ms(total_db_exec_ms)} ({total_db_exec_ms}ms) "
+                f"overhead={format_ms(other_overhead_ms)} ({other_overhead_ms}ms)"
+            ),
+        )
+        tool_tasks_text = format_duration_map(tool_exec_ms_by_name)
+        if tool_tasks_text:
+            tracker.emit("TIME_TASKS", tool_tasks_text)
+        sql_tasks_text = format_duration_map(db_exec_ms_by_statement_type)
+        if sql_tasks_text:
+            tracker.emit("TIME_SQL", sql_tasks_text)
 
         if sandbox.is_connected:
             try:
@@ -1611,6 +1697,28 @@ def audit_run(runs_dir: Path, run_id: str) -> None:
                 f"db_exec_ms={perf_raw.get('db_exec_ms')} "
                 f"step_count={perf_raw.get('step_count')}"
             )
+
+            other_overhead = perf_raw.get("other_overhead_ms")
+            if isinstance(other_overhead, int):
+                print(
+                    "[TIME_TOTAL] "
+                    f"overall={format_ms(int(perf_raw.get('run_total_ms', 0) or 0))} "
+                    f"overhead={format_ms(other_overhead)}"
+                )
+
+            raw_tool_map = perf_raw.get("tool_exec_ms_by_name")
+            if isinstance(raw_tool_map, dict):
+                tool_map = {str(k): int(v) for k, v in raw_tool_map.items() if isinstance(v, int)}
+                tool_text = format_duration_map(tool_map)
+                if tool_text:
+                    print(f"[TIME_TASKS] {tool_text}")
+
+            raw_sql_map = perf_raw.get("db_exec_ms_by_statement_type")
+            if isinstance(raw_sql_map, dict):
+                sql_map = {str(k): int(v) for k, v in raw_sql_map.items() if isinstance(v, int)}
+                sql_text = format_duration_map(sql_map)
+                if sql_text:
+                    print(f"[TIME_SQL] {sql_text}")
 
     if step_perf_path.exists():
         step_records: list[dict[str, Any]] = []
