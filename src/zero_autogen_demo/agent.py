@@ -1489,14 +1489,6 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
         }
         artifacts.perf_path.write_text(json.dumps(perf_payload, indent=2), encoding="utf-8")
         tracker.emit(
-            "PERF",
-            (
-                f"run_total_ms={run_total_ms} zero_provision_ms={zero_provision_ms} "
-                f"model_decision_ms={model_decision_ms} tool_exec_ms={total_tool_exec_ms} "
-                f"db_exec_ms={total_db_exec_ms} step_count={tracker.step_count}"
-            ),
-        )
-        tracker.emit(
             "TIME_TOTAL",
             f"overall={format_ms(run_total_ms)} ({run_total_ms}ms)",
         )
@@ -1576,14 +1568,6 @@ async def run_autonomous_demo(settings: Settings, goal: str, source_url: str) ->
             "error": str(exc),
         }
         artifacts.perf_path.write_text(json.dumps(perf_payload, indent=2), encoding="utf-8")
-        tracker.emit(
-            "PERF",
-            (
-                f"run_total_ms={run_total_ms} zero_provision_ms={zero_provision_ms} "
-                f"model_decision_ms={model_decision_ms} tool_exec_ms={total_tool_exec_ms} "
-                f"db_exec_ms={total_db_exec_ms} step_count={tracker.step_count}"
-            ),
-        )
         tracker.emit(
             "TIME_TOTAL",
             f"overall={format_ms(run_total_ms)} ({run_total_ms}ms)",
