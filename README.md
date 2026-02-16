@@ -1,6 +1,6 @@
 # TiDB Zero Agent Demo
 
-> **Autonomous SQL Agent running on TiDB Zero (Serverless).**
+> **Autonomous SQL Agent running on TiDB Zero.**
 > Spawns a fresh database, fetches real-time data, designs a schema, and writes SQL to answer your questions.
 
 ## ⚡ Quick Start
