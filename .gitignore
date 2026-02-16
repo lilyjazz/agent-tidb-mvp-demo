@@ -15,6 +15,7 @@ build/
 # Runtime Artifacts
 .runs/
 *tidb_zero_instance.json
+codex-latest.sh
 
 # IDE / Editor
 .vscode/
