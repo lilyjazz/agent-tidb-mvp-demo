@@ -29,11 +29,11 @@ cp .env.example .env
 
 ### 3. Run
 
-**:flight_departure: One-Liner (Earthquake Analysis):**
+**:flight_departure: One-Liner (Tokyo Weather):**
 ```bash
 .venv/bin/zero-agent-demo run \
-  "Find and summarize the lastest clusters." \
-  --source-url "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
+  "Analyze Tokyo's next 48h temp trend. Highlight the biggest drop." \
+  --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
 ```
 
 ---
@@ -41,13 +41,6 @@ cp .env.example .env
 ## 🍳 Cookbook
 
 Try these live data sources. The agent handles the schema automatically.
-
-**Weather Analysis (Tokyo):**
-```bash
-.venv/bin/zero-agent-demo run \
-  "Analyze Tokyo's next 48h temp trend. Highlight the biggest drop." \
-  --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
-```
 
 **Startup Trends (TechCrunch):**
 ```bash
@@ -61,6 +54,13 @@ Try these live data sources. The agent handles the schema automatically.
 .venv/bin/zero-agent-demo run \
   "What are the dominant engineering topics right now?" \
   --source-url "https://lobste.rs/hottest.json"
+```
+
+**Earthquake Analysis (USGS):**
+```bash
+.venv/bin/zero-agent-demo run \
+  "Find and summarize the latest clusters." \
+  --source-url "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
 ```
 
 ---
