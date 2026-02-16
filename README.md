@@ -21,7 +21,7 @@ If you have the `codex` or `claude` CLI installed and logged in.
 
 No .env needed! Just run the step 3 :rocket:
 
-#### Option B: I have an API Key (OpenAI / Anthropic / Gemini) :hammer:**
+#### Option B: I have an API Key (OpenAI / Anthropic / Gemini) :hammer:
 ```bash
 cp .env.example .env
 # Edit .env and set MODEL_API_KEY=sk-...
