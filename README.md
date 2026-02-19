@@ -44,7 +44,7 @@ The following is the current validation status in this repo:
 | :--- | :--- | :--- | :--- | :--- |
 | OpenAI API | `openai` | API Key | ✅ Tested | Use first |
 | Codex Subscription | `codex_subscription` | Codex CLI login | ✅ Tested | Use first |
-| Claude Subscription | `claude_subscription` | Claude CLI login | ⚠️ Not fully tested | Use after tested paths |
+| Claude Subscription | `claude_subscription` | Claude CLI login | ✅ Tested | Use first |
 | Anthropic API | `anthropic` | API Key | ⚠️ Not fully tested | Use after tested paths |
 | Gemini API | `gemini` | API Key | ⚠️ Not fully tested | Use after tested paths |
 | OpenAI-compatible API | `openai_compatible` | API Key + Base URL | ⚠️ Not fully tested | Use after tested paths |
