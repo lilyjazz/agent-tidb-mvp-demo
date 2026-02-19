@@ -697,7 +697,6 @@ def run_codex_subscription_prompt(settings: Settings, prompt: str, *, batch_tool
 def run_claude_subscription_prompt(settings: Settings, prompt: str, *, batch_tools_enabled: bool) -> str:
     cmd = [
         settings.claude_subscription_bin,
-        "-p",
         "--output-format",
         "text",
         "--json-schema",
@@ -708,6 +707,7 @@ def run_claude_subscription_prompt(settings: Settings, prompt: str, *, batch_too
         settings.model_name,
         "--tools",
         "",
+        "-p",
         prompt,
     ]
 
