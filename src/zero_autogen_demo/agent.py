@@ -698,11 +698,9 @@ def run_claude_subscription_prompt(settings: Settings, prompt: str, *, batch_too
     cmd = [
         settings.claude_subscription_bin,
         "--output-format",
-        "text",
+        "json",
         "--json-schema",
         json.dumps(subscription_decision_schema(batch_tools_enabled=batch_tools_enabled)),
-        "--max-turns",
-        "1",
         "--model",
         settings.model_name,
         "--tools",
@@ -733,6 +731,18 @@ def run_claude_subscription_prompt(settings: Settings, prompt: str, *, batch_too
 
     if not output_text:
         raise RuntimeError("Claude CLI returned empty output")
+
+    # --output-format json wraps the model's response in a metadata envelope
+    # like {"type":"result","subtype":"success","result":"...","structured_output":{...}}.
+    # Unwrap it so callers see the model's actual JSON decision directly.
+    wrapper = extract_first_json_object(output_text)
+    if isinstance(wrapper, dict) and wrapper.get("type") == "result":
+        structured = wrapper.get("structured_output")
+        if isinstance(structured, dict):
+            return json_dumps(structured)
+        result_str = wrapper.get("result")
+        if isinstance(result_str, str) and result_str.strip():
+            return result_str.strip()
 
     return output_text
 
