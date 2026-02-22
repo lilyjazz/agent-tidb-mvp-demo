@@ -1,133 +1,110 @@
 # TiDB Zero Agent Demo
 
-> **Autonomous SQL Agent running on TiDB Zero (Serverless).**
-> Spawns a fresh database, fetches real-time data, designs a schema, and writes SQL to answer your questions.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![TiDB Zero](https://img.shields.io/badge/TiDB-Serverless-ff0066)](https://pingcap.com/ai)
+
+> **Autonomous SQL Agent.** Spawns a dedicated serverless database, ingests data from any URL, designs a schema, and writes SQL to answer your questions—all in seconds.
+
+---
+
+## 🚀 Features
+
+- **Zero-Config Infrastructure**: Automatically provisions ephemeral TiDB Zero (Serverless) instances.
+- **Autonomous Data Engineering**: Analyzes raw data (JSON/CSV/XML), designs normalized schemas, and handles ingestion.
+- **Self-Healing SQL**: Writes, executes, and fixes SQL queries automatically based on execution errors.
+- **Multi-Provider Support**: Works with OpenAI, Anthropic, Gemini, or local CLI subscriptions (Codex/Claude).
+- **Full Auditability**: Every thought, SQL query, and result is logged for replay and audit.
 
 ## ⚡ Quick Start
 
-### 1. Install
+### 1. Installation
+
+Requires Python 3.10+.
 
 ```bash
 git clone https://github.com/lilyjazz/agent-tidb-mvp-demo.git
 cd agent-tidb-mvp-demo
+
 python3 -m venv .venv
-.venv/bin/pip install -e .
+source .venv/bin/activate
+pip install -e .
 ```
 
-### 2. Configure (Choose One)
+### 2. Configuration
 
-#### Option A: I have a Codex / Claude subscription (No API Key needed! :sparkles:)
-If you have the `codex` or `claude` CLI installed and logged in.
+Choose your preferred AI provider:
 
-No .env needed! Just run the step 3 :rocket:
+#### Option A: API Key (Recommended)
+Create a `.env` file:
 
-#### Option B: I have an API Key (OpenAI / Anthropic / Gemini) :hammer:
 ```bash
 cp .env.example .env
-# Edit .env and set MODEL_API_KEY=sk-...
 ```
+Edit `.env` to set your API key (e.g., `MODEL_API_KEY=sk-...` for OpenAI/Anthropic/Gemini).
 
-### 3. Run
+#### Option B: CLI Subscription (No API Key)
+If you have `codex` or `claude` CLI tools installed and authenticated, no `.env` is required. Just use the `--provider` flag.
 
-**:flight_departure: One-Liner (Tokyo Weather):**
+### 3. Usage
+
+**Analyze Tokyo Weather:**
 ```bash
-.venv/bin/zero-agent-demo run \
+zero-agent-demo run \
   "Analyze Tokyo's next 48h temp trend. Highlight the biggest drop." \
   --source-url "https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2"
 ```
 
-### 4. Support Status (Prioritize Tested Paths)
-
-The following is the current validation status in this repo:
-
-| Method | `MODEL_PROVIDER` | Auth | Status | Recommendation |
-| :--- | :--- | :--- | :--- | :--- |
-| OpenAI API | `openai` | API Key | ✅ Tested | Use first |
-| Codex Subscription | `codex_subscription` | Codex CLI login | ✅ Tested | Use first |
-| Claude Subscription | `claude_subscription` | Claude CLI login | ✅ Tested | Use first |
-| Anthropic API | `anthropic` | API Key | ⚠️ Not fully tested | Use after tested paths |
-| Gemini API | `gemini` | API Key | ⚠️ Not fully tested | Use after tested paths |
-| OpenAI-compatible API | `openai_compatible` | API Key + Base URL | ⚠️ Not fully tested | Use after tested paths |
-
----
-
-## 🍳 Cookbook
-
-Try these live data sources. The agent handles the schema automatically.
-
-**Startup Trends (TechCrunch):**
+**Analyze Tech Trends:**
 ```bash
-.venv/bin/zero-agent-demo run \
-  "Summarize top 1 startup trends from today's feed." \
+zero-agent-demo run \
+  "Summarize top startup trends from today's feed." \
   --source-url "https://techcrunch.com/feed/"
 ```
 
-**Developer Topics (Lobsters):**
+**Custom Provider:**
 ```bash
-.venv/bin/zero-agent-demo run \
-  "What are the dominant engineering topics right now?" \
-  --source-url "https://lobste.rs/hottest.json"
+zero-agent-demo run "Analyze this data..." --source-url "..." --provider anthropic
 ```
 
-**Earthquake Analysis (USGS):**
-```bash
-.venv/bin/zero-agent-demo run \
-  "Find and summarize the latest clusters." \
-  --source-url "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
-```
+## 🔍 Observability
 
----
+Every run produces a detailed artifact trail in `.runs/`.
 
-## 🛠 How It Works
+| Command | Description |
+| :--- | :--- |
+| `zero-agent-demo replay <run_id>` | Replay the agent's thought process step-by-step. |
+| `zero-agent-demo audit <run_id>` | View all executed SQL statements and their results. |
+| `zero-agent-demo conn <run_id>` | Get the connection string to connect to the ephemeral DB manually. |
 
-1.  **Provision:** CLI requests a fresh, ephemeral TiDB Zero instance (no signup needed).
-2.  **Fetch:** Agent grabs data from your URL (JSON/XML/CSV).
-3.  **Design:** Agent analyzes data structure and `CREATE TABLE`.
-4.  **Ingest:** Agent inserts data into TiDB.
-5.  **Analyze:** Agent writes SQL queries to answer your question.
-6.  **Cleanup:** Database expires automatically.
-
-## 🔍 Audit & Replay
-
-Every run is recorded in `.runs/`.
+### Example Replays
+We include sample runs in `examples/replay-runs`:
 
 ```bash
-# Replay the thought process
-.venv/bin/zero-agent-demo replay <run_id>
-
-# See exactly what SQL was executed
-.venv/bin/zero-agent-demo audit <run_id>
-
-# Get database connection string (to connect manually)
-.venv/bin/zero-agent-demo conn <run_id>
+# Replay a pre-recorded run analyzing Hacker News trends
+RUNS_DIR=examples/replay-runs zero-agent-demo replay fe37758b-ba2d-48a8-8d4c-865a41a5a43f
 ```
 
-Sample successful replay snapshots are available under `examples/replay-runs/`.
+## 🛠 Supported Providers
 
-```bash
-RUNS_DIR=examples/replay-runs .venv/bin/zero-agent-demo replay <run_id>
-RUNS_DIR=examples/replay-runs .venv/bin/zero-agent-demo audit <run_id>
-```
+| Provider | CLI Flag | Auth | Status |
+| :--- | :--- | :--- | :--- |
+| **OpenAI** | `openai` | `MODEL_API_KEY` | ✅ Stable |
+| **Codex CLI** | `codex_subscription` | `codex login` | ✅ Stable |
+| **Claude CLI** | `claude_subscription` | `claude login` | ✅ Stable |
+| **Anthropic** | `anthropic` | `MODEL_API_KEY` | ⚠️ Beta |
+| **Gemini** | `gemini` | `MODEL_API_KEY` | ⚠️ Beta |
 
-Preloaded replay run IDs and scenarios:
+## 🤝 Contributing
 
-| Run ID | Scenario | Source |
-| :--- | :--- | :--- |
-| `fe37758b-ba2d-48a8-8d4c-865a41a5a43f` | Dominant engineering topics from Lobsters hottest feed | `https://lobste.rs/hottest.json` |
-| `42415b9f-e91c-4b0b-87e9-d12604ca7b80` | Top startup trend from today's TechCrunch feed | `https://techcrunch.com/feed/` |
-| `934bc942-f0dd-442f-8c48-ff9edd698a9d` | Tokyo weather next 48h trend and biggest drop | `https://api.open-meteo.com/v1/forecast?latitude=35.68&longitude=139.76&hourly=temperature_2m&forecast_days=2` |
-| `7dc4d4f3-c763-4aa7-8fa8-0a2c1b538c15` | Earthquake cluster summary from USGS all-day feed | `https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson` |
+Contributions are welcome! Please feel free to submit a Pull Request.
 
----
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-## Advanced Configuration
+## 📄 License
 
-Full list of environment variables:
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `MODEL_PROVIDER` | `openai`, `anthropic`, `gemini`, `openai_compatible`, `claude_subscription`, `codex_subscription` | `openai` |
-| `MODEL_API_KEY` | Required if using API providers | - |
-| `MODEL_NAME` | Specific model version (e.g. `gpt-4o`) | Provider default |
-| `TIDB_ZERO_TAG` | Tag for the ephemeral instance | `agent-demo` |
-| `BATCH_TOOLS (EXPERIMENTS)` | Enable multi-action decisions in subscription mode (`true`/`false`) | `false` |
+Distributed under the MIT License. See `LICENSE` for more information.
